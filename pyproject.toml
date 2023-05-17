@@ -25,4 +25,4 @@ dependencies = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-"immunodbtest.data" = ["HPCA.rds"]
+"immunophenodb.data" = ["HPCA.rds"]
