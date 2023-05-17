@@ -922,9 +922,12 @@ def connect_db_cells(idExperiment: int,
     combined = pd.concat([labels, deltas], axis=1)
     combined_filt = combined[combined['delta.next'] > threshold]
 
+    # Apply same filtering to cells from normalization step
+    combined_filt_norm = combined_filt.loc[IPD.normalized_counts.index]
+
     print("Inserting new cells...")  
     # Insert cells that are in the combined singleR dataframe
-    with _tqdm_output(tqdm(combined_filt.iterrows(), total=len(combined_filt))) as tqdm_cells:
+    with _tqdm_output(tqdm(combined_filt_norm.iterrows(), total=len(combined_filt_norm))) as tqdm_cells:
         for index, row in tqdm_cells:
             check_cell_exists_query = """SELECT COUNT(*)
                                     FROM cells
@@ -951,7 +954,7 @@ def connect_db_cells(idExperiment: int,
     db_cells_list = [cell[0] for cell in db_cells]
 
     # Cells in dataframe
-    sr_cells = combined_filt.index
+    sr_cells = combined_filt_norm.index
 
     # Find difference between two using XOR operator
     diff = set(db_cells_list) ^ set(sr_cells)
@@ -1052,6 +1055,7 @@ def link_antigen(ab_id_pair: list,
     raw_counts = IPD.protein_cleaned
     classified_counts = IPD.classified_filt
     normalized_counts = IPD.normalized_counts
+    num_cells = len(normalized_counts.index)
 
     # CHECK: Does this antibody id exist in the database?
     check_ab_exists_query = """SELECT COUNT(*)
@@ -1064,50 +1068,52 @@ def link_antigen(ab_id_pair: list,
 
     if ab_exists_result == 1:
         print(f"Manually inserting {ab_name} into antigen expression table...")
+        ab_norm_counts = normalized_counts.loc[:, ab_name].items()
         # Look into normalized counts
-        for cell_name, value in normalized_counts.loc[:, ab_name].items():
-            # Get the matching idCell for this cell 
-            idCell_query = """SELECT idCell
-                            FROM cells
-                            WHERE cells.idCellOriginal=(%s)
-                            AND cells.idExperiment=(%s)"""
+        with _tqdm_output(tqdm(ab_norm_counts, total=num_cells)) as tqdm_normalized:
+            for cell_name, value in tqdm_normalized:
+                # Get the matching idCell for this cell 
+                idCell_query = """SELECT idCell
+                                FROM cells
+                                WHERE cells.idCellOriginal=(%s)
+                                AND cells.idExperiment=(%s)"""
 
-            cursor.execute(idCell_query, (cell_name, idExperiment))
-            
-            idCell_res = cursor.fetchone()
+                cursor.execute(idCell_query, (cell_name, idExperiment))
+                
+                idCell_res = cursor.fetchone()
 
-            # Check if idCell exists in database
-            if idCell_res is not None:
-                idCell = idCell_res[0]
-            # If it doesn't, then skip this cell.
-            else:
-                continue
+                # Check if idCell exists in database
+                if idCell_res is not None:
+                    idCell = idCell_res[0]
+                # If it doesn't, then skip this cell.
+                else:
+                    continue
 
-            # Grab the raw value of this cell-antibody match
-            ab_raw_val = int(raw_counts.loc[cell_name][ab_name])
+                # Grab the raw value of this cell-antibody match
+                ab_raw_val = int(raw_counts.loc[cell_name][ab_name])
 
-            # Grab the normalized value
-            ab_norm_val = float(value)
+                # Grab the normalized value
+                ab_norm_val = float(value)
 
-            # Get the classification status 
-            ab_classification = int(classified_counts.loc[cell_name][ab_name])
+                # Get the classification status 
+                ab_classification = int(classified_counts.loc[cell_name][ab_name])
 
-            if ab_classification == 0:
-                background = True
-            elif ab_classification == 1:
-                background = False
-            
-            try:
-                cursor.callproc("insert_antigen_expression", 
-                                args=(idCell,
-                                    ab_id,
-                                    idExperiment,
-                                    ab_raw_val,
-                                    ab_norm_val,
-                                    background))
-                conn.commit()
-            except:
-                raise Exception("Error with manually inserting antigen-expression value")
+                if ab_classification == 0:
+                    background = True
+                elif ab_classification == 1:
+                    background = False
+                
+                try:
+                    cursor.callproc("insert_antigen_expression", 
+                                    args=(idCell,
+                                        ab_id,
+                                        idExperiment,
+                                        ab_raw_val,
+                                        ab_norm_val,
+                                        background))
+                    conn.commit()
+                except:
+                    raise Exception("Error with manually inserting antigen-expression value")
 
     elif ab_exists_result == 0:
         raise Exception(f"Unable to locate antibody ID:{ab_id} in database. Re-check parameters and call link_ab_uniprot()")
