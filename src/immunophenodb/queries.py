@@ -668,7 +668,21 @@ def _connect_db_antibody(specs_csv: str):
 
     with _tqdm_output(tqdm(antibodies)) as tqdm_ab:
         for ab_id_pair in tqdm_ab:
-            each_hit_results = _sci_uni(ab_id_pair)
+             # CHECK: Does this antibody id exist in the database?
+            check_ab_exists_query = """SELECT COUNT(*)
+                                    FROM antibodies 
+                                    WHERE antibodies.idAntibody=(%s)"""
+            # Parameter must be converted from str to tuple
+            cursor.execute(check_ab_exists_query, (ab_id_pair[1], ))
+            ab_exists_result = cursor.fetchone()[0]
+
+            if ab_exists_result == 1:
+                # Antibody already exists, we can skip 
+                continue
+            else:
+                # Else, we want to do a lookup
+                each_hit_results = _sci_uni(ab_id_pair)
+
             try:
                 for hit_results in each_hit_results:
                     alias, clonalBool, host, uniprotID, cloneID, otherAliases = hit_results
@@ -798,7 +812,15 @@ def _connect_db_antigen_expression(idExperiment: int,
         for ab, counts in tqdm_normalized:
             # Get the corresponding antibody id for this antibody
             ab_id = ab_lookup[ab]
-
+            
+            # First check if this antibody is completely background       
+            all_bg = all(x == 0 for x in (IPD.classified_filt.loc[:, ab]))
+            if all_bg:
+                # Skip this antibody
+                errors.append((ab, ab_id, 'Antibody contains only background expression.'))
+                logging.warning(f"Skipping {ab}. Refer to antigen_errors.txt")
+                continue
+            
             # CHECK: Does this antibody id exist in the database?
             check_ab_exists_query = """SELECT COUNT(*)
                                     FROM antibodies 
