@@ -26,6 +26,7 @@ def setup_singleR():
     # Install required packages if not already 
     package_names = ("BiocManager", "SummarizedExperiment", "SingleR")
     if all(rpackages.isinstalled(x) for x in package_names):
+        rpy2_logger.setLevel(logging.ERROR)
         print("All R packages installed...")
         have_package = True
     else:
