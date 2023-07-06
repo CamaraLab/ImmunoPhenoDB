@@ -22,8 +22,10 @@ UNIPROT_ENDPOINT = "/uniprotkb/search"
 def _read_cells(csv_file: str) -> list:
     """
     Converts a csv to a pandas dataframe and returns a list of cell names
+
     Parameters:
         csv_file (str): name of csv file containing normalized counts
+
     Returns:
         list containing all cell names
     """
@@ -31,8 +33,9 @@ def _read_cells(csv_file: str) -> list:
     return list(normalized_counts.index)
 
 def _read_experiment(csv_file: str) -> dict:
-    """
+    """ 
     Parses a spreadsheet containing information about an experiment
+
     Parameters:
         csv_file (str): name of csv file containing experiment details
     
@@ -42,7 +45,7 @@ def _read_experiment(csv_file: str) -> dict:
     """
     experiment = {}
     expTypes = ['cite', 'reap', 'ab']
-
+ 
     with open(csv_file, 'r') as csv_file:
         reader = csv.reader(csv_file)
 
@@ -71,6 +74,7 @@ def _read_experiment(csv_file: str) -> dict:
 def _read_antibodies(csv_file: str) -> list:
     """
     Parses a spreadsheet containing antibody IDs 
+
     Parameters:
         csv_file (str): name of csv file containing antibody names
     
@@ -96,8 +100,10 @@ def _read_antibodies(csv_file: str) -> list:
 def _ab_dict(specs_csv: str) -> dict:
     """
     Constructs a dictionary of each antibody name with their id
+
     Parameters:
         specs_csv (str): name of csv file containing antibodies and ids
+
     Returns:
         ab_dict (dict): dictionary containing antibody names as keys, ids as values
     """
@@ -113,9 +119,11 @@ def _ab_dict(specs_csv: str) -> dict:
 def _findkeys(node: list, kv: str) -> iter:
     """
     Recursively find all instances of a key in a nested JSON file
+
     Parameters:
         node (list/dict): root node (key) in JSON file or dictionary
         kv (str): search term for key
+
     Return:
         x (iterator): all key-value results
     """
@@ -134,6 +142,7 @@ def _findkeys(node: list, kv: str) -> iter:
 def _tqdm_output(tqdm, write=sys.stderr.write):
     """
     Context manager wrapper for tqdm progress bar
+
     Parameters:
         tqdm (tqdm object): object created with the tqdm class
         write (file output object): location to display progress bar
@@ -155,9 +164,11 @@ def _uniprot(sci_crunch_alias: str = None,
              user_uniprotID: str = None) -> tuple:
     """
     Retrieves information about an antibody using UniProt's API
+
     Parameters:
         sci_crunch_alias (str): antibody alias returned from SciCrunch API
         uniprotID (str): user-provided UniProtID for manual entry
+
     Returns:
         uniprotID, otherAliases (tuple [str, list]): antibody alias
             and aliases retrieved from UniProt
@@ -283,6 +294,7 @@ def _uniprot(sci_crunch_alias: str = None,
 def _sci_crunch_hits(ab_id: str) -> bool:
     """
     Retrieves information about an antibody using SciCrunch's API
+
     Parameters:
         ab_id (str): antibody id from The Antibody Registry
     
@@ -300,9 +312,11 @@ def _sci_uni(ab_id_pair: list,
              user_uniprotID: str = None) -> list:
     """
     Retrieves information from SciCrunch and UniProt for an antibody
+
     Parameters:
         ab_id_pair (list[str, str]): antibody name and id ('CD90', 'AB_123')
         user_uniprotID (str): UniProt accession ID (optional, for manual entry)
+
     Returns:
         each_hit_results (list): information gathered using SciCrunch and UniProt
             for an antibody.
@@ -378,6 +392,7 @@ def _config(filename: str = 'config.ini',
             section: str ='mysql') -> dict:
     """
     Configures authorization parameters for a MySQL Database
+
     Parameters:
         filename (str): .ini file containing: host, user, password, database
         section (str): type of database "[mysql]" found at beginning of .ini file
@@ -412,6 +427,7 @@ def _connect_db_tables():
         experiments
         cells
         antigen_expression
+        unique_idCLs
     """
     proteins_table = """CREATE TABLE IF NOT EXISTS proteins(
                     idUniProtKB CHAR(6) NOT NULL,
@@ -474,6 +490,13 @@ def _connect_db_tables():
                         FOREIGN KEY (idExperiment) REFERENCES cells(idExperiment));
                         """
 
+    unique_idCLs_table = """CREATE TABLE IF NOT EXISTS unique_idCLs(    
+                        idCL CHAR(10) NOT NULL,
+                        PRIMARY KEY (idCL));
+                        """
+    
+    check_tables = """SHOW TABLES;"""
+
     # Connect to database
     params = _config()
     print('Connecting to the MySQL database...')
@@ -481,39 +504,56 @@ def _connect_db_tables():
     print("Connected to db\n")
     cursor = conn.cursor()
 
+    # Check for existing tables
+    cursor.execute(check_tables)
+    current_tables = cursor.fetchall()
+    tables_list = [table[0] for table in current_tables]
+
+    required_tables = ['aliases', 'antibodies', 'antigen_expression', 'antigens',
+                       'cells', 'experiments', 'proteins', 'unique_idCLs']
+    
+    if set(required_tables) == set(tables_list):
+        print("All tables present...")
+    else:
+        print("Creating proteins table...")
+        print("Creating aliases table...")
+        print("Creating antibodies table...")
+        print("Creating antigens table...")
+        print("Creating experiments table...")
+        print("Creating cells table...")
+        print("Creating antigen expression table...")
+        print("Creating unique_idCLs table...")
+
     # Create proteins table
-    print("Creating proteins table...")
     cursor.execute(proteins_table)
     conn.commit()
 
     # Create aliases table
-    print("Creating aliases table...")
     cursor.execute(aliases_table)
     conn.commit()
 
     # Create antibodies table
-    print("Creating antibodies table...")
     cursor.execute(antibodies_table)
     conn.commit()
 
     # Create antigens table
-    print("Creating antigens table...")
     cursor.execute(antigens_table)
     conn.commit()
 
     # Create experiments table
-    print("Creating experiments table...")
     cursor.execute(experiments_table)
     conn.commit()
 
     # Create cells table
-    print("Creating cells table...")
     cursor.execute(cells_table)
     conn.commit()
 
     # Create antigen-expression table
-    print("Creating antigen expression table...")
     cursor.execute(antigen_expr_table)
+    conn.commit()
+
+    # Create unique_idCLs table
+    cursor.execute(unique_idCLs_table)
     conn.commit()
 
     if conn is not None:
@@ -530,6 +570,7 @@ def _connect_db_procedures():
         insert_alias
         insert_cell
         insert_antigen_expression
+        update_idCLs
     """
     delete_experiment_proc = "DROP PROCEDURE IF EXISTS insert_experiment;"
     insert_experiment_proc = """CREATE PROCEDURE insert_experiment(
@@ -600,6 +641,21 @@ def _connect_db_procedures():
         END
     """
 
+    delete_update_proc = """DROP PROCEDURE IF EXISTS update_idCLs;"""
+    update_idCLs_proc = """CREATE PROCEDURE update_idCLs()
+                        BEGIN 
+                            DELETE FROM unique_idCLs;
+                            INSERT INTO unique_idCLs (idCL) (
+                                SELECT DISTINCT cells.idCL
+                                FROM cells
+                            );
+                        END;
+                        """
+    
+    check_proc = """SELECT specific_name
+                    FROM information_schema.ROUTINES
+                    WHERE routine_schema=DATABASE();"""
+    
     # Connect to database
     params = _config()
     print('Connecting to the MySQL database...')
@@ -607,39 +663,58 @@ def _connect_db_procedures():
     print("Connected to db\n")
     cursor = conn.cursor()
 
+    # Check for existing tables
+    cursor.execute(check_proc)
+    current_procs = cursor.fetchall()
+    procs_list = [proc[0] for proc in current_procs]
+
+    required_procs = ['insert_alias', 'insert_antibody', 'insert_antigen_expression',
+                      'insert_cell', 'insert_experiment', 'update_idCLs']
+
+    if set(required_procs) == set(procs_list):
+        print("All procedures present...")
+    else:
+        print("Creating insert_experiment procedure...")
+        print("Creating insert_antibody procedure...")
+        print("Creating insert_alias procedure...")
+        print("Creating insert_cell procedure...")
+        print("Creating insert_antigen procedure...")
+        print("Creating update_idCLs procedure...")
+
     cursor.execute(delete_experiment_proc)
     conn.commit()
 
-    print("Creating insert_experiment procedure...")
     cursor.execute(insert_experiment_proc)
     conn.commit()
 
     cursor.execute(delete_antibody_proc)
     conn.commit()
 
-    print("Creating insert_antibody procedure...")
     cursor.execute(insert_antibody_proc)
     conn.commit()
 
     cursor.execute(delete_alias_proc)
     conn.commit()
 
-    print("Creating insert_alias procedure...")
     cursor.execute(insert_alias_proc)
     conn.commit()
 
     cursor.execute(delete_cell_proc)
     conn.commit()
 
-    print("Creating insert_cell procedure...")
     cursor.execute(insert_cell_proc)
     conn.commit()
 
     cursor.execute(delete_antigen_proc)
     conn.commit()
-
-    print("Creating insert_antigen procedure...")
+    
     cursor.execute(insert_antigen_proc)
+    conn.commit()
+
+    cursor.execute(delete_update_proc)
+    conn.commit()
+
+    cursor.execute(update_idCLs_proc)
     conn.commit()
 
     if conn is not None:
@@ -650,6 +725,7 @@ def _connect_db_procedures():
 def _connect_db_antibody(specs_csv: str):
     """
     Connects to a MySQL database and inserts information about antibodies
+
     Parameters:
         specs_csv (str): name of csv file containing a spreadsheet with
             information about the experiment and antibodies
@@ -668,7 +744,7 @@ def _connect_db_antibody(specs_csv: str):
 
     with _tqdm_output(tqdm(antibodies)) as tqdm_ab:
         for ab_id_pair in tqdm_ab:
-             # CHECK: Does this antibody id exist in the database?
+            # CHECK: Does this antibody id exist in the database?
             check_ab_exists_query = """SELECT COUNT(*)
                                     FROM antibodies 
                                     WHERE antibodies.idAntibody=(%s)"""
@@ -706,6 +782,7 @@ def _connect_db_antibody(specs_csv: str):
 def _connect_db_experiment(specs_csv: str, IPD) -> int:
     """
     Connects to a database and inserts information about an experiment
+
     Parameters:
         specs_csv (str): name of csv file containing a spreadsheet with
             information about the experiment and antibodies
@@ -781,6 +858,7 @@ def _connect_db_antigen_expression(idExperiment: int,
                                    IPD):
     """
     Connects to a database and populates the antigen_expression table
+
     Parameters:
         idExperiment (int): the id of the experiment inserted in the database
         specs_csv (str): name of csv file containing a spreadsheet with
@@ -812,7 +890,7 @@ def _connect_db_antigen_expression(idExperiment: int,
         for ab, counts in tqdm_normalized:
             # Get the corresponding antibody id for this antibody
             ab_id = ab_lookup[ab]
-            
+
             # First check if this antibody is completely background       
             all_bg = all(x == 0 for x in (IPD.classified_filt.loc[:, ab]))
             if all_bg:
@@ -820,7 +898,7 @@ def _connect_db_antigen_expression(idExperiment: int,
                 errors.append((ab, ab_id, 'Antibody contains only background expression.'))
                 logging.warning(f"Skipping {ab}. Refer to antigen_errors.txt")
                 continue
-            
+
             # CHECK: Does this antibody id exist in the database?
             check_ab_exists_query = """SELECT COUNT(*)
                                     FROM antibodies 
@@ -831,7 +909,6 @@ def _connect_db_antigen_expression(idExperiment: int,
             
             # If antibody exists, the value will be 1
             if ab_exists_result == 1:
-
                 # Start parsing through each cell for this antibody
                 for cell_name, value in counts.items():
                     # Get the matching idCell for this cell 
@@ -906,6 +983,7 @@ def connect_db_cells(idExperiment: int,
     Connects to a database and inserts information into the cells table
     and updates the antigen_expression table. This function can be called
     repeatedly with adjustments to the threshold.
+
     Parameters:
         idExperiment (int): the id of the experiment inserted in the database
         specs_csv (str): name of csv file containing a spreadsheet with
@@ -944,7 +1022,7 @@ def connect_db_cells(idExperiment: int,
     combined = pd.concat([labels, deltas], axis=1)
     combined_filt = combined[combined['delta.next'] > threshold]
 
-    # Apply same filtering to cells from normalization step
+    # Apply same filtering to cells that were filtered out during normalization
     combined_filt_norm = combined_filt.loc[IPD.normalized_counts.index]
 
     print("Inserting new cells...")  
@@ -1005,6 +1083,10 @@ def connect_db_cells(idExperiment: int,
         cursor.execute(add_foreign_key_check)
         conn.commit()
 
+    # Update the unique_idCLs table after adding new idCLs
+    cursor.callproc('update_idCLs')
+    conn.commit()
+
     if conn is not None:
         print("Disconnecting from database...\n")
         cursor.close()
@@ -1019,6 +1101,7 @@ def link_ab_uniprot(ab_id_pair: list,
                     uniprotID: str):
     """
     Insert an antibody into the database using an explicit UniProtID
+
     Parameters:
         ab_id_pair (list[str, str]): antibody name and id. Ex: ['CD90', 'AB_123']
         uniprotID (str): accession ID from UniProtKB
@@ -1057,6 +1140,7 @@ def link_antigen(ab_id_pair: list,
                  IPD):
     """
     Populate antigen_expression table for a single antibody
+
     Parameters:
         ab_id_pair (list[str, str]): antibody name and id. Ex: ['CD90', 'AB_123']
         idExperiment (int): the id of the experiment inserted in the database
@@ -1152,6 +1236,7 @@ def load_csv_database(specs_csv: str,
     Wrapper function to populate the entire database using a spreadsheet
     containing an experiment and antibodies along with an ImmunoPhenoData object
     from the ImmunoPheno package
+
     Parameters:
         specs_csv (str): name of csv file containing a spreadsheet with
             information about the experiment and antibodies
