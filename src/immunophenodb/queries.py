@@ -3,6 +3,8 @@ import json
 import logging
 import pandas as pd
 import csv
+import urllib
+from datetime import datetime
 
 import configparser
 import mysql.connector # mysql-connector-python
@@ -18,6 +20,7 @@ SCI_RRID_ENDPOINT = "/resolver/"
 SCI_FILE = ".json"
 UNIPROT_BASE = "https://rest.uniprot.org"
 UNIPROT_ENDPOINT = "/uniprotkb/search"
+EBI_BASE = "https://www.ebi.ac.uk/ols/api/search"
 
 def _read_cells(csv_file: str) -> list:
     """
@@ -384,7 +387,8 @@ def _sci_uni(ab_id_pair: list,
     if errors:
         with open('antibody_errors.txt', 'a') as f:
             for error in errors:
-                f.write(f"{error}\n")
+                time = str(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                f.write(f"[{time}] {error}\n")
 
     return each_hit_results
 
@@ -424,10 +428,11 @@ def _connect_db_tables():
         aliases
         antibodies
         antigens
+        tissues
+        cell_types
         experiments
         cells
         antigen_expression
-        unique_idCLs
     """
     proteins_table = """CREATE TABLE IF NOT EXISTS proteins(
                     idUniProtKB CHAR(6) NOT NULL,
@@ -446,6 +451,13 @@ def _connect_db_tables():
                         polyclonal BOOLEAN NOT NULL,
                         host VARCHAR(45) NOT NULL,
                         cloneID VARCHAR(45) NOT NULL,
+                        abName VARCHAR(128) NOT NULL,
+                        abTarget VARCHAR(128) NOT NULL,
+                        citation VARCHAR(128),
+                        comments VARCHAR(2000),
+                        vendor VARCHAR(128),
+                        catalogNum VARCHAR(128),
+                        FULLTEXT (idAntibody, host, cloneID, abName, abTarget, citation, comments, vendor, catalogNum),
                         PRIMARY KEY (idAntibody));
                         """
 
@@ -456,7 +468,20 @@ def _connect_db_tables():
                     FOREIGN KEY (idAntibody) REFERENCES antibodies(idAntibody),
                     FOREIGN KEY (idUniProtKB) REFERENCES proteins(idUniProtKB));
                     """
-
+    
+    tissues_table = """CREATE TABLE IF NOT EXISTS tissues (
+                    idBTO CHAR(11) NOT NULL,
+                    tissueName VARCHAR(128) NOT NULL,
+                    PRIMARY KEY (idBTO));
+                    """
+    
+    cell_types_table = """CREATE TABLE IF NOT EXISTS cell_types (
+                            idCL CHAR(10) NOT NULL,
+                            label VARCHAR(128) NOT NULL,
+                            FULLTEXT (idCL, label),
+                            PRIMARY KEY (idCL));
+                            """
+    
     experiments_table = """CREATE TABLE IF NOT EXISTS experiments(
                         idExperiment INT UNSIGNED NOT NULL AUTO_INCREMENT,
                         nameExp CHAR(255) NOT NULL,
@@ -464,9 +489,10 @@ def _connect_db_tables():
                         pmid INT UNSIGNED NULL,
                         doi CHAR(255) NULL,
                         idBTO CHAR(11) NOT NULL,
-                        PRIMARY KEY (idExperiment));
+                        PRIMARY KEY (idExperiment),
+                        FOREIGN KEY (idBTO) REFERENCES tissues(idBTO));
                         """
-
+    
     cells_table = """CREATE TABLE IF NOT EXISTS cells(
                     idCL CHAR(10) NULL, 
                     idCell INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -474,7 +500,8 @@ def _connect_db_tables():
                     idExperiment INT UNSIGNED NOT NULL,
                     certainty FLOAT NULL,
                     PRIMARY KEY (idCell, idExperiment),
-                    FOREIGN KEY (idExperiment) REFERENCES experiments(idExperiment));
+                    FOREIGN KEY (idExperiment) REFERENCES experiments(idExperiment),
+                    FOREIGN KEY (idCL) REFERENCES cell_types(idCL));
                     """
     
     antigen_expr_table = """CREATE TABLE IF NOT EXISTS antigen_expression(
@@ -490,11 +517,6 @@ def _connect_db_tables():
                         FOREIGN KEY (idExperiment) REFERENCES cells(idExperiment));
                         """
 
-    unique_idCLs_table = """CREATE TABLE IF NOT EXISTS unique_idCLs(    
-                        idCL CHAR(10) NOT NULL,
-                        PRIMARY KEY (idCL));
-                        """
-    
     check_tables = """SHOW TABLES;"""
 
     # Connect to database
@@ -508,10 +530,10 @@ def _connect_db_tables():
     cursor.execute(check_tables)
     current_tables = cursor.fetchall()
     tables_list = [table[0] for table in current_tables]
-
-    required_tables = ['aliases', 'antibodies', 'antigen_expression', 'antigens',
-                       'cells', 'experiments', 'proteins', 'unique_idCLs']
     
+    required_tables = ['aliases', 'antibodies', 'antigen_expression', 'antigens',
+                       'cells', 'experiments', 'proteins', 'tissues', 'cell_types']
+
     if set(required_tables) == set(tables_list):
         print("All tables present...")
     else:
@@ -519,10 +541,11 @@ def _connect_db_tables():
         print("Creating aliases table...")
         print("Creating antibodies table...")
         print("Creating antigens table...")
+        print("Creating tissues table...")
+        print("Creating cell_types table...")
         print("Creating experiments table...")
         print("Creating cells table...")
         print("Creating antigen expression table...")
-        print("Creating unique_idCLs table...")
 
     # Create proteins table
     cursor.execute(proteins_table)
@@ -540,6 +563,14 @@ def _connect_db_tables():
     cursor.execute(antigens_table)
     conn.commit()
 
+    # Create tissues table
+    cursor.execute(tissues_table)
+    conn.commit()
+
+    # Create cell_types table
+    cursor.execute(cell_types_table)
+    conn.commit()
+
     # Create experiments table
     cursor.execute(experiments_table)
     conn.commit()
@@ -550,10 +581,6 @@ def _connect_db_tables():
 
     # Create antigen-expression table
     cursor.execute(antigen_expr_table)
-    conn.commit()
-
-    # Create unique_idCLs table
-    cursor.execute(unique_idCLs_table)
     conn.commit()
 
     if conn is not None:
@@ -570,7 +597,6 @@ def _connect_db_procedures():
         insert_alias
         insert_cell
         insert_antigen_expression
-        update_idCLs
     """
     delete_experiment_proc = "DROP PROCEDURE IF EXISTS insert_experiment;"
     insert_experiment_proc = """CREATE PROCEDURE insert_experiment(
@@ -578,9 +604,11 @@ def _connect_db_procedures():
             IN typeExp ENUM('CITE', 'REAP', 'AB'),
             IN pmid INT,
             IN doi CHAR(255),
-            IN idBTO CHAR(11) -- provided from user spreadsheet
+            IN idBTO CHAR(11),
+            IN tissueName VARCHAR(128) 
         ) 
         BEGIN
+            INSERT IGNORE INTO tissues(idBTO, tissueName) VALUES (idBTO, tissueName);
             INSERT IGNORE INTO experiments(nameExp, typeExp, pmid, doi, idBTO) VALUES (nameExp, typeExp, pmid, doi, idBTO);
         END
     """
@@ -592,10 +620,18 @@ def _connect_db_procedures():
             IN idUniProtKB CHAR(6),
             IN polyclonal BOOLEAN,
             IN host VARCHAR(45),
-            IN cloneID VARCHAR(45)
+            IN cloneID VARCHAR(45),
+            IN abName VARCHAR(128),
+            IN abTarget VARCHAR(128),
+            IN citation VARCHAR(128),
+            IN comments VARCHAR(2000),
+            IN vendor VARCHAR(128),
+            IN catalogNum VARCHAR(128)
         )
         BEGIN
-            INSERT IGNORE INTO antibodies (idAntibody, polyclonal, host, cloneID) VALUES (idAntibody, polyclonal, host, cloneID);
+            INSERT IGNORE INTO antibodies (idAntibody, polyclonal, host, cloneID, abName, abTarget, citation, comments, vendor, catalogNum) 
+            VALUES (idAntibody, polyclonal, host, cloneID, abName, abTarget, citation, comments, vendor, catalogNum);
+            
             INSERT IGNORE INTO proteins (idUniProtKB) VALUES (idUniProtKB);
             INSERT IGNORE INTO aliases (alias, idUniProtKB) VALUES (alias, idUniProtKB);
             INSERT IGNORE INTO antigens (idAntibody, idUniProtKB) VALUES (idAntibody, idUniProtKB);
@@ -617,9 +653,12 @@ def _connect_db_procedures():
             IN idCL CHAR(10),
             IN idCellOriginal VARCHAR(255),
             IN idExperiment INT,
-            IN certainty FLOAT
+            IN certainty FLOAT,
+            IN label VARCHAR(128)
         )
         BEGIN 
+            INSERT IGNORE INTO cell_types(idCL, label) VALUES (idCL, label);
+        
             INSERT INTO cells(idCL, idCellOriginal, idExperiment, certainty) 
             VALUES (idCL, idCellOriginal, idExperiment, certainty)
             ON DUPLICATE KEY UPDATE idCL=idCL, idCellOriginal=idCellOriginal, idExperiment=idExperiment, certainty=certainty;
@@ -640,18 +679,6 @@ def _connect_db_procedures():
             VALUES (idCell, idAntibody, idExperiment, rawValue, normValue, background);
         END
     """
-
-    delete_update_proc = """DROP PROCEDURE IF EXISTS update_idCLs;"""
-    update_idCLs_proc = """CREATE PROCEDURE update_idCLs()
-                        BEGIN 
-                            DELETE FROM unique_idCLs;
-                            INSERT INTO unique_idCLs (idCL) (
-                                SELECT DISTINCT cells.idCL
-                                FROM cells
-                            );
-                        END;
-                        """
-    
     check_proc = """SELECT specific_name
                     FROM information_schema.ROUTINES
                     WHERE routine_schema=DATABASE();"""
@@ -669,7 +696,7 @@ def _connect_db_procedures():
     procs_list = [proc[0] for proc in current_procs]
 
     required_procs = ['insert_alias', 'insert_antibody', 'insert_antigen_expression',
-                      'insert_cell', 'insert_experiment', 'update_idCLs']
+                      'insert_cell', 'insert_experiment']
 
     if set(required_procs) == set(procs_list):
         print("All procedures present...")
@@ -679,7 +706,6 @@ def _connect_db_procedures():
         print("Creating insert_alias procedure...")
         print("Creating insert_cell procedure...")
         print("Creating insert_antigen procedure...")
-        print("Creating update_idCLs procedure...")
 
     cursor.execute(delete_experiment_proc)
     conn.commit()
@@ -711,16 +737,33 @@ def _connect_db_procedures():
     cursor.execute(insert_antigen_proc)
     conn.commit()
 
-    cursor.execute(delete_update_proc)
-    conn.commit()
-
-    cursor.execute(update_idCLs_proc)
-    conn.commit()
-
     if conn is not None:
         print("Disconnecting from database...\n")
         cursor.close()
         conn.close()
+
+def extra_ab_info(ab_id: str):
+    encoding = urllib.parse.quote(ab_id, safe='', encoding=None, errors=None)
+    url = f"https://scicrunch.org/php/data-federation-csv.php?orMultiFacets=true&count=10000&nifid=nif-0000-07730-1&exportType=data&q={encoding}&offset=0"
+    
+    raw_df = pd.read_csv(url)
+    
+    # Select columns to add to resulting dataframe
+    cols = ['id', 
+            'ab_name', 
+            'ab_target', 
+            'proper_citation', 
+            'clonality', 
+            'defining_citation', 
+            'comments', 
+            'clone_id', 
+            'target_species', 
+            'vendor', 
+            'catalog_num']
+    
+    final_df = raw_df[cols]
+    
+    return final_df
 
 def _connect_db_antibody(specs_csv: str):
     """
@@ -760,11 +803,22 @@ def _connect_db_antibody(specs_csv: str):
                 each_hit_results = _sci_uni(ab_id_pair)
 
             try:
+                
+                # Make request to Antibody Registry for additional info
+                results_df = extra_ab_info(ab_id_pair[1])
+                ab_name = str(results_df.loc[0]['ab_name'])
+                ab_target = str(results_df.loc[0]['ab_target'])
+                citation = str(results_df.loc[0]['proper_citation'])
+                comments = str(results_df.loc[0]['comments'])
+                vendor = str(results_df.loc[0]['vendor'])
+                catalogNum = str(results_df.loc[0]['catalog_num']) # this will be a str varchar in db
+
                 for hit_results in each_hit_results:
                     alias, clonalBool, host, uniprotID, cloneID, otherAliases = hit_results
 
                     cursor.callproc('insert_antibody',
-                                    args=(ab_id_pair[1], alias, uniprotID, clonalBool, host, cloneID))
+                                    args=(ab_id_pair[1], alias, uniprotID, clonalBool, host, cloneID,
+                                          ab_name, ab_target, citation, comments, vendor, catalogNum))
                     # Commit query changes
                     conn.commit()
 
@@ -778,6 +832,22 @@ def _connect_db_antibody(specs_csv: str):
         print("Disconnecting from database...\n")
         cursor.close()
         conn.close()
+
+def convert_idBTO_readable(idBTO: str):
+    idBTO_params = {
+        'q': idBTO,
+        'ontology': 'bto',
+        'local': 'true',
+        'exact': 'true',
+        'rows': 1,
+        'start': 0
+    }
+    
+    res = requests.get(EBI_BASE, params=idBTO_params)
+    res_JSON = res.json()
+    cellType = res_JSON['response']['docs'][0]['label']
+    
+    return cellType
 
 def _connect_db_experiment(specs_csv: str, IPD) -> int:
     """
@@ -831,8 +901,12 @@ def _connect_db_experiment(specs_csv: str, IPD) -> int:
         print("Inserting experiment PMID:", expPMID)
         print("Inserting experiment DOI:", expDOI)
         print("Inserting experiment tissue:", expTissue)
+
+        # Make request to OLS database for tissue name
+        tissue_name = convert_idBTO_readable(expTissue)
+
         cursor.callproc("insert_experiment", 
-                        args=(expName, expTypeEntry, expPMID, expDOI, expTissue))
+                        args=(expName, expTypeEntry, expPMID, expDOI, expTissue, tissue_name))
         conn.commit()
 
         sql_search_query = """SELECT experiments.idExperiment
@@ -972,8 +1046,26 @@ def _connect_db_antigen_expression(idExperiment: int,
     # Log errors to an external file
     if errors:
         with open('antigen_errors.txt', 'a') as f:
+            f.write("\n")
             for error in errors:
-                f.write(f"{error}\n")
+                time = str(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                f.write(f"[{time}] {error}\n")
+
+def convert_idCL_readable(idCL:str):
+    idCL_params = {
+        'q': idCL,
+        'ontology': 'cl',
+        'local': 'true',
+        'exact': 'true',
+        'rows': 1,
+        'start': 0
+    }
+    
+    res = requests.get(EBI_BASE, params=idCL_params)
+    res_JSON = res.json()
+    cellType = res_JSON['response']['docs'][0]
+    
+    return cellType
 
 def connect_db_cells(idExperiment: int,
                      specs_csv: str,
@@ -993,7 +1085,7 @@ def connect_db_cells(idExperiment: int,
         threshold (float): value to filter cells based on the certainty value
             calculated by singleR.
             Ex: Setting threshold = 0.1 will filter out all cells that 
-            have a certainty value lessthan 0.1
+            have a certainty value less than 0.1
     """
     # Connect to database
     params = _config()
@@ -1038,7 +1130,12 @@ def connect_db_cells(idExperiment: int,
             cell_exists_result = cursor.fetchone()[0]
             if cell_exists_result == 0:
                 try:
-                    cursor.callproc("insert_cell", args=(row['labels'], index, idExperiment, row['delta.next']))
+                    # Get readable idCL name and link
+                    idCL_info = convert_idCL_readable(row['labels'])
+                    cell_type_name = idCL_info['label']
+
+                    cursor.callproc("insert_cell", args=(row['labels'], index, idExperiment, row['delta.next'],
+                                                         cell_type_name))
                     conn.commit()
                 except:
                     raise Exception("Error with inserting cell")
@@ -1082,10 +1179,6 @@ def connect_db_cells(idExperiment: int,
         add_foreign_key_check = """SET FOREIGN_KEY_CHECKS=1"""
         cursor.execute(add_foreign_key_check)
         conn.commit()
-
-    # Update the unique_idCLs table after adding new idCLs
-    cursor.callproc('update_idCLs')
-    conn.commit()
 
     if conn is not None:
         print("Disconnecting from database...\n")
