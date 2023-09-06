@@ -905,9 +905,21 @@ def _connect_db_experiment(specs_csv: str, IPD) -> int:
         # Make request to OLS database for tissue name
         tissue_name = convert_idBTO_readable(expTissue)
 
-        cursor.callproc("insert_experiment", 
-                        args=(expName, expTypeEntry, expPMID, expDOI, expTissue, tissue_name))
-        conn.commit()
+        check_exp_exists_query = """SELECT COUNT(*)
+                                    FROM experiments
+                                    WHERE experiments.nameExp=(%s)"""
+        # Parameter must be converted from str to tuple
+        cursor.execute(check_exp_exists_query, (expName, ))
+        exp_exists_result = cursor.fetchone()[0]
+
+        if exp_exists_result != 1:
+            # If experiment doesn't exist, we can add it
+            cursor.callproc("insert_experiment", 
+                            args=(expName, expTypeEntry, expPMID, expDOI, expTissue, tissue_name))
+            conn.commit()
+        else:
+            # If it does exist, do nothing
+            pass
 
         sql_search_query = """SELECT experiments.idExperiment
                             FROM experiments
