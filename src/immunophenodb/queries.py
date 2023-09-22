@@ -865,11 +865,16 @@ def _connect_db_experiment(specs_csv: str, IPD) -> int:
     """
     normalized_counts = IPD.normalized_counts
 
-    # CHECK: Antibodies in specs spreadsheet must match those in the protein data
+    # CHECK: Antibodies in specs spreadsheet must be in the protein data
     ab_id_pairs = _read_antibodies(specs_csv)
     ab_names = set([ab_id[0] for ab_id in ab_id_pairs])
 
-    if ab_names != set(normalized_counts.columns):
+    differences = set(ab_names).difference(set(normalized_counts.columns))
+    # If there are antibodies in the spreadsheet that are not in the data, raise exception
+    if len(differences) > 0:
+        for ab in differences:
+            logging.warning(f"ERROR: Antibody {ab} in spreadsheet not found in dataset")
+        
         raise Exception("Mismatched antibody names between spreadsheet and protein data.")
 
     experiment = _read_experiment(specs_csv)
@@ -1361,3 +1366,162 @@ def load_csv_database(specs_csv: str,
     idExperiment = _connect_db_experiment(specs_csv, IPD)
     _connect_db_antibody(specs_csv)
     connect_db_cells(idExperiment, specs_csv, IPD, threshold)
+
+def delete_experiment(idExperiment: int):
+    params = _config()
+    print('Connecting to the MySQL database...')
+    conn = mysql.connector.connect(**params)
+    print("Connected to db\n")
+    cursor = conn.cursor()
+    
+    # Before starting, check if experiment even exists in database
+    exp_exists_query = """SELECT COUNT(*)
+                        FROM experiments
+                        WHERE experiments.idExperiment = (%s)"""
+    cursor.execute(exp_exists_query, (idExperiment, ))
+    exists_result = cursor.fetchone()[0]
+    
+    if exists_result == 0:
+        raise Exception(f"Error. Experiment {idExperiment} does not exist in the database.")
+        
+    # Remove foreign key check
+    remove_foreign_key_check = """SET FOREIGN_KEY_CHECKS=0"""
+    cursor.execute(remove_foreign_key_check)
+    conn.commit()
+    
+    idExp_antibodies_query = """SELECT DISTINCT antigen_expression.idAntibody
+                            FROM antigen_expression
+                            WHERE antigen_expression.idExperiment = (%s)"""
+    
+    cursor.execute(idExp_antibodies_query, (idExperiment, ))
+    all_abs = cursor.fetchall()
+    all_abs_list = [ab[0] for ab in all_abs]
+    
+    ab_to_delete = []
+    
+    # Find which antibodies need to be removed from the 'antibodies' table
+    for ab in all_abs_list:
+        num_idExp_query = """SELECT COUNT(DISTINCT (antigen_expression.idExperiment))
+                        FROM antigen_expression
+                        WHERE antigen_expression.idAntibody = (%s)"""
+        cursor.execute(num_idExp_query, (ab, ))
+        num_idExp = cursor.fetchone()[0]
+        
+        if num_idExp == 1:
+            ab_to_delete.append(ab)
+    
+    # Delete all rows from antigen_expression for this experiment (regardless of above)
+    delete_antigen_expression_query = """DELETE FROM antigen_expression
+                                    WHERE antigen_expression.idExperiment = (%s) """
+    print(f"Deleting rows in 'antigen_expression' for experiment {idExperiment}...")
+    cursor.execute(delete_antigen_expression_query, (idExperiment, ))
+    conn.commit()
+            
+    # Delete all related information about the antibody from the 'antibodies' table
+    for ab in ab_to_delete:
+        idUniprot_query = """SELECT antigens.idUniProtKB
+                        FROM antigens
+                        WHERE antigens.idAntibody = (%s)"""
+        cursor.execute(idUniprot_query, (ab, ))
+        idUniprot = cursor.fetchone()[0]
+    
+        delete_aliases_query = """DELETE FROM aliases
+                            WHERE aliases.idUniProtKB = (%s)"""
+        print(f"Deleting rows in 'aliases' for antibody: {ab}...")
+        cursor.execute(delete_aliases_query, (idUniprot, ))
+        conn.commit()
+        
+        delete_antigens_query = """DELETE FROM antigens
+                                WHERE antigens.idAntibody = (%s)"""
+        print(f"Deleting rows in 'antigens' for antibody: {ab}...")
+        cursor.execute(delete_antigens_query, (ab, ))
+        conn.commit()
+        
+        delete_proteins_query = """DELETE FROM proteins
+                                WHERE proteins.idUniProtKB = (%s) """
+        print(f"Deleting rows in 'proteins' for antibody: {ab}...")
+        cursor.execute(delete_proteins_query, (idUniprot, ))
+        conn.commit()
+        
+        delete_antibodies_query = """DELETE FROM antibodies
+                                WHERE antibodies.idAntibody = (%s)"""
+        print(f"Deleting rows in 'antibodies' for antibody: {ab}...")
+        cursor.execute(delete_antibodies_query, (ab, ))
+        conn.commit()
+    
+    # Find all cell types for this experiment
+    idExp_celltypes_query = """SELECT DISTINCT cells.idCL
+                            FROM cells
+                            WHERE cells.idExperiment = (%s) """
+    
+    cursor.execute(idExp_celltypes_query, (idExperiment, ))
+    all_idCLs = cursor.fetchall()
+    all_idCLs_list = [idCL[0] for idCL in all_idCLs]
+    
+    idCL_to_delete = []
+    
+    # Find which idCLs need to be removed
+    for idCL in all_idCLs_list:
+        num_idExp_ct_query = """SELECT COUNT(DISTINCT (cells.idExperiment))
+                            FROM cells
+                            WHERE cells.idCL = (%s)"""
+        cursor.execute(num_idExp_ct_query, (idCL, ))
+        num_idExp = cursor.fetchone()[0]
+        
+        if num_idExp == 1:
+            idCL_to_delete.append(idCL)
+    
+    # Before deleting cell types, delete all cells for this experiment
+    delete_cells_query = """DELETE FROM cells
+                        WHERE cells.idExperiment = (%s)"""
+    print(f"Deleting rows in 'cells' for experiment {idExperiment}...")
+    cursor.execute(delete_cells_query, (idExperiment, ))
+    conn.commit()
+    
+    # Delete cell types 
+    for idCL in idCL_to_delete:
+        delete_idCL_query = """DELETE FROM cell_types
+                            WHERE cell_types.idCL = (%s)"""
+        print(f"Deleting rows in 'cell_types' for cell type {idCL}...")
+        cursor.execute(delete_idCL_query, (idCL, ))
+        conn.commit()
+            
+    # Find the current tissue of the experiment
+    idExp_tissue_query = """SELECT experiments.idBTO
+                        FROM experiments
+                        WHERE experiments.idExperiment = (%s);"""
+    cursor.execute(idExp_tissue_query, (idExperiment, ))
+    idExp_tissue = cursor.fetchone()[0]
+    
+    # Find the number of experiments that use this tissue
+    num_tissue_idExp_query = """SELECT COUNT(*)
+                                FROM experiments
+                                WHERE experiments.idBTO = (%s)"""
+    cursor.execute(num_tissue_idExp_query, (idExp_tissue, ))
+    num_tissue = cursor.fetchone()[0]
+    
+    # Remove the experiment from the experiment table
+    delete_experiment_query = """DELETE FROM experiments
+                            WHERE experiments.idExperiment = (%s)"""
+    cursor.execute(delete_experiment_query, (idExperiment, ))
+    conn.commit()
+    
+    # If there was only one experiment, remove the tissue
+    if num_tissue == 1:
+        delete_tissue_query = """DELETE FROM tissues
+                            WHERE tissues.idBTO = (%s)"""
+        print(f"Deleting rows in 'tissues' for tissue {idExp_tissue}...")
+        cursor.execute(delete_tissue_query, (idExp_tissue, ))
+        conn.commit()
+        
+    print(f"Deleting row in 'experiments' for experiment {idExperiment}...") 
+    
+    # Re-add foreign key check
+    add_foreign_key_check = """SET FOREIGN_KEY_CHECKS=1"""
+    cursor.execute(add_foreign_key_check)
+    conn.commit()
+        
+    if conn is not None:
+        print("Disconnecting from database...\n")
+        cursor.close()
+        conn.close()
