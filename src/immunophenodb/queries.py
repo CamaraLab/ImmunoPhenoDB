@@ -765,7 +765,7 @@ def extra_ab_info(ab_id: str):
     
     return final_df
 
-def _connect_db_antibody(specs_csv: str):
+def _connect_db_antibody(specs_csv: str, IPD):
     """
     Connects to a MySQL database and inserts information about antibodies
 
@@ -781,6 +781,8 @@ def _connect_db_antibody(specs_csv: str):
     cursor = conn.cursor()
 
     print("Inserting antibodies...")
+
+    errors = []
     
     # Read all antibodies from csv file ('CD90', 'AB_123')
     antibodies = _read_antibodies(specs_csv)
@@ -799,6 +801,15 @@ def _connect_db_antibody(specs_csv: str):
                 # Antibody already exists, we can skip 
                 continue
             else:
+                # First check if this antibody is completely background       
+                all_bg = all(x == 0 for x in (IPD.classified_filt.loc[:, ab_id_pair[0]]))
+                if all_bg:
+                    # Skip this antibody
+                    errors.append((ab_id_pair[0], ab_id_pair[1], f'Antibody {ab_id_pair[0]} only contains background expression.'))
+                    logging.warning(f"Skipping {ab_id_pair[0]}. Refer to antibody_errors.txt")
+                    continue
+                
+                # If antibody does not exist, AND it is not completely background
                 # Else, we want to do a lookup
                 each_hit_results = _sci_uni(ab_id_pair)
 
@@ -827,6 +838,13 @@ def _connect_db_antibody(specs_csv: str):
                         conn.commit()
             except:
                 raise Exception(f"Error with inserting antibody {ab_id_pair[1]} into database")
+        
+    # Log errors to an external file
+    if errors:
+        with open('antibody_errors.txt', 'a') as f:
+            for error in errors:
+                time = str(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                f.write(f"[{time}] {error}\n")
     
     if conn is not None:
         print("Disconnecting from database...\n")
@@ -1364,7 +1382,7 @@ def load_csv_database(specs_csv: str,
 
     # Retrieve idExperiment after putting into database
     idExperiment = _connect_db_experiment(specs_csv, IPD)
-    _connect_db_antibody(specs_csv)
+    _connect_db_antibody(specs_csv, IPD)
     connect_db_cells(idExperiment, specs_csv, IPD, threshold)
 
 def delete_experiment(idExperiment: int):
