@@ -1,7 +1,5 @@
 import pandas as pd
 import logging
-import warnings
-import configparser
 from importlib.resources import files
 
 import rpy2
@@ -16,7 +14,8 @@ import io
 import requests
 from pyensembl import EnsemblRelease
 from gtfparse import read_gtf
-import mysql.connector
+
+import requests
 
 def setup_singleR():
     """
@@ -153,48 +152,52 @@ def singleR(rna_count_df: pd.DataFrame,
     print("Finished running SingleR.")
     return labels_df, singleR_df
 
-def _config(filename: str = 'config.ini', 
-            section: str ='mysql') -> dict:
+def convert_idCL_readable(idCL:str) -> str:
     """
-    Configures authorization parameters for a MySQL Database
+    Converts a cell ontology id (CL:XXXXXXX) into a readable cell type name
 
     Parameters:
-        filename (str): .ini file containing: host, user, password, database
-        section (str): type of database "[mysql]" found at beginning of .ini file
+        idCL (str): cell ontology ID
+
+    Returns:
+        cellType (str): readable cell type name
+        
+    """
+    idCL_params = {
+        'q': idCL,
+        'exact': 'true',
+        'ontology': 'cl',
+        'fieldList': 'label',
+        'rows': 1,
+        'start': 0
+    }
+    
+    res = requests.get("https://www.ebi.ac.uk/ols/api/search", params=idCL_params)
+    res_JSON = res.json()
+    cellType = res_JSON['response']['docs'][0]['label']
+    
+    return cellType
+
+def ebi_idCL_map(labels_df: pd.DataFrame) -> dict:
+    """
+    Converts a list of cell ontology IDs into readable cell type names
+    as a dictionary
+
+    Parameters:
+        labels_df (pd.DataFrame): dataframe with cell labels from singleR
     
     Returns:
-        db (dict): dictionary containing login credentials such as host, 
-        user, password, database, and port
+        idCL_map (dict) : dictionary mapping cell ontology ID to cell type
+    
     """
-    parser = configparser.ConfigParser()
-    parser.read(filename)
-
-    db = {}
-
-    if parser.has_section(section):
-        if parser.has_section(section):
-            params = parser.items(section)
-
-        for param in params:
-            db[param[0]] = param[1]
-    else:
-        raise Exception(f"{section} not found in {filename}")
-  
-    return db
-
-def get_complete_idCL_map():
-    warnings.filterwarnings('ignore')
+    idCL_map = {}
     
-    params = _config()
-    conn = mysql.connector.connect(**params)
-
-    idCL_map = """SELECT *
-                FROM cell_types;"""
-
-    idCL_df = pd.read_sql(sql=idCL_map, con=conn)
-    idCL_map_dict = dict(idCL_df.values)
+    idCLs = set(labels_df["labels"])
     
-    return idCL_map_dict
+    for idCL in idCLs:
+        idCL_map[idCL] = convert_idCL_readable(idCL)
+    
+    return idCL_map
 
 def annotate_cells(IPD,
                    ref_ver: int = 75):
@@ -206,8 +209,6 @@ def annotate_cells(IPD,
             with protein data
         ref_ver (int): version number for reference dataset
     """
-    # Cell Type (idCL) mapping dictionary
-    complete_map_dict = get_complete_idCL_map()
 
     # If RNA data is provided, we can run singleR to get the idCLs and certainty metrics
     if IPD.gene_cleaned is not None:
@@ -221,6 +222,10 @@ def annotate_cells(IPD,
 
         # With this dataframe, convert the 'idCL' key with the common name
         # Saves us the need to do this later
+        
+        # Create mapping dictionary of idCLs to cell type names
+        complete_map_dict = ebi_idCL_map(labels_df)
+
         labels_df['celltype'] = labels_df['labels'].map(complete_map_dict)
 
         IPD.raw_cell_labels = labels_df
