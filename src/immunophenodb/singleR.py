@@ -89,7 +89,7 @@ def singleR(rna_count_df: pd.DataFrame,
             each cell annotation
     """
     # Instead of installing Human Primary Cell Atlas from celldex, load in RDS file (SummarizedExperiment object)
-    HPCA_rds_path = str(files('immunodbtest.data').joinpath('HPCA.rds'))
+    HPCA_rds_path = str(files('immunophenodb.data').joinpath('HPCA.rds'))
     readRDS = robjects.r['readRDS']
     HPCA_rds = readRDS(file=HPCA_rds_path)
 
@@ -161,7 +161,7 @@ def convert_idCL_readable(idCL:str) -> str:
 
     Returns:
         cellType (str): readable cell type name
-        
+
     """
     idCL_params = {
         'q': idCL,
