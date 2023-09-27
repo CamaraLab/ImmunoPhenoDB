@@ -1,5 +1,7 @@
 import pandas as pd
 import logging
+import warnings
+import configparser
 from importlib.resources import files
 
 import rpy2
@@ -14,6 +16,7 @@ import io
 import requests
 from pyensembl import EnsemblRelease
 from gtfparse import read_gtf
+import mysql.connector
 
 def setup_singleR():
     """
@@ -26,7 +29,6 @@ def setup_singleR():
     # Install required packages if not already 
     package_names = ("BiocManager", "SummarizedExperiment", "SingleR")
     if all(rpackages.isinstalled(x) for x in package_names):
-        rpy2_logger.setLevel(logging.ERROR)
         print("All R packages installed...")
         have_package = True
     else:
@@ -43,6 +45,7 @@ def setup_singleR():
 def get_ensdb_ref(ref_ver: int) -> pd.DataFrame:
     """
     Retrieves a reference dataset from the Human Primary Cell Atlas database
+
     Parameters:
         ref_ver (int): version number of the reference dataset
     
@@ -75,6 +78,7 @@ def singleR(rna_count_df: pd.DataFrame,
             ref_ver: int = None) -> pd.DataFrame:
     """
     Runs SingleR using rpy2
+
     Parameters:
         rna_count_df (pd.DataFrame): dataframe containing RNA data
         ref_ver (int): version number for reference dataset
@@ -82,11 +86,11 @@ def singleR(rna_count_df: pd.DataFrame,
     Returns:
         labels_df (pd.DataFrame): dataframe containing cell annotations as
             cell ontologies (EMBL-EBI conventions, CL:XXXXXXX)
-        deltas_df (pd.DataFrame): dataframe containing certainty values for 
+        singleR_df (pd.DataFrame): dataframe containing certainty values for 
             each cell annotation
     """
     # Instead of installing Human Primary Cell Atlas from celldex, load in RDS file (SummarizedExperiment object)
-    HPCA_rds_path = str(files('immunophenodb.data').joinpath('HPCA.rds'))
+    HPCA_rds_path = str(files('immunodbtest.data').joinpath('HPCA.rds'))
     readRDS = robjects.r['readRDS']
     HPCA_rds = readRDS(file=HPCA_rds_path)
 
@@ -128,34 +132,83 @@ def singleR(rna_count_df: pd.DataFrame,
     # Else, keep current gene names
     elif num_rows != num_ensembl:
         print("No ensembl IDs found...")
+        # Convert pandas df into R data frame
         
         with (robjects.default_converter + pandas2ri.converter).context():
             print("Converting pandas dataframe into R dataframe...")
+            # Convert new pandas df into R dataframe
             r_df = robjects.conversion.get_conversion().py2rpy(rna_counts)
             print("Running SingleR...")
+            # Run SingleR
             srLabels = sr.SingleR(test=r_df, ref=HPCA_rds, labels=dollar(HPCA_rds, "label.ont"))
 
     # Convert SingleR R data frame to a pandas df
     with (robjects.default_converter + pandas2ri.converter).context():
         print("Converting R dataframe back into pandas dataframe...")
         pd_df = robjects.conversion.get_conversion().rpy2py(r('as.data.frame')(srLabels))
-        pd_labels_delta_df = pd_df[['labels', 'delta.next']]
 
-        labels_df = pd.DataFrame(pd_labels_delta_df.loc[:, 'labels'])
-        deltas_df = pd.DataFrame(pd_labels_delta_df.loc[:, 'delta.next'])
+        labels_df = pd.DataFrame(pd_df.loc[:, 'labels'])
+        singleR_df = pd.DataFrame(pd_df)
 
     print("Finished running SingleR.")
-    return labels_df, deltas_df
+    return labels_df, singleR_df
+
+def _config(filename: str = 'config.ini', 
+            section: str ='mysql') -> dict:
+    """
+    Configures authorization parameters for a MySQL Database
+
+    Parameters:
+        filename (str): .ini file containing: host, user, password, database
+        section (str): type of database "[mysql]" found at beginning of .ini file
+    
+    Returns:
+        db (dict): dictionary containing login credentials such as host, 
+        user, password, database, and port
+    """
+    parser = configparser.ConfigParser()
+    parser.read(filename)
+
+    db = {}
+
+    if parser.has_section(section):
+        if parser.has_section(section):
+            params = parser.items(section)
+
+        for param in params:
+            db[param[0]] = param[1]
+    else:
+        raise Exception(f"{section} not found in {filename}")
+  
+    return db
+
+def get_complete_idCL_map():
+    warnings.filterwarnings('ignore')
+    
+    params = _config()
+    conn = mysql.connector.connect(**params)
+
+    idCL_map = """SELECT *
+                FROM cell_types;"""
+
+    idCL_df = pd.read_sql(sql=idCL_map, con=conn)
+    idCL_map_dict = dict(idCL_df.values)
+    
+    return idCL_map_dict
 
 def annotate_cells(IPD,
                    ref_ver: int = 75):
     """
     Annotates cells using RNA data from an ImmunoPhenoData object
+
     Parameters:
         IPD (ImmunoPhenoData object): object that must contain gene data along
             with protein data
         ref_ver (int): version number for reference dataset
     """
+    # Cell Type (idCL) mapping dictionary
+    complete_map_dict = get_complete_idCL_map()
+
     # If RNA data is provided, we can run singleR to get the idCLs and certainty metrics
     if IPD.gene_cleaned is not None:
         rna_counts = IPD.gene_cleaned
@@ -164,10 +217,17 @@ def annotate_cells(IPD,
         setup_singleR()
 
         # Run singleR
-        labels_df, deltas_df = singleR(rna_counts, ref_ver)
+        labels_df, singleR_df = singleR(rna_counts, ref_ver)
+
+        # With this dataframe, convert the 'idCL' key with the common name
+        # Saves us the need to do this later
+        labels_df['celltype'] = labels_df['labels'].map(complete_map_dict)
 
         IPD.raw_cell_labels = labels_df
-        IPD.label_certainties = deltas_df
+        IPD._temp_labels = labels_df
+
+        IPD.label_certainties = singleR_df
+        IPD._temp_certainties = singleR_df
     else:
         raise Exception("Error. No RNA data found. Unable to annotate cells.")
     
