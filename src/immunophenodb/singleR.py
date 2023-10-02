@@ -149,7 +149,6 @@ def singleR(rna_count_df: pd.DataFrame,
         labels_df = pd.DataFrame(pd_df.loc[:, 'labels'])
         singleR_df = pd.DataFrame(pd_df)
 
-    print("Finished running SingleR.")
     return labels_df, singleR_df
 
 def convert_idCL_readable(idCL:str) -> str:
@@ -233,6 +232,8 @@ def annotate_cells(IPD,
 
         IPD.label_certainties = singleR_df
         IPD._temp_certainties = singleR_df
+
+        print("Finished running SingleR.")
     else:
         raise Exception("Error. No RNA data found. Unable to annotate cells.")
     
