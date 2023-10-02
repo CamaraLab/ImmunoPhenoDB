@@ -5,6 +5,7 @@ import pandas as pd
 import csv
 import urllib
 from datetime import datetime
+import warnings
 
 import configparser
 import mysql.connector # mysql-connector-python
@@ -881,13 +882,13 @@ def _connect_db_experiment(specs_csv: str, IPD) -> int:
         id_result (int): the id of the experiment that was recently inserted
             into the database. Will be used in other procedures.
     """
-    normalized_counts = IPD.normalized_counts
+    protein_counts = IPD._temp_protein
 
     # CHECK: Antibodies in specs spreadsheet must be in the protein data
     ab_id_pairs = _read_antibodies(specs_csv)
     ab_names = set([ab_id[0] for ab_id in ab_id_pairs])
 
-    differences = set(ab_names).difference(set(normalized_counts.columns))
+    differences = set(ab_names).difference(set(protein_counts.columns))
     # If there are antibodies in the spreadsheet that are not in the data, raise exception
     if len(differences) > 0:
         for ab in differences:
@@ -1384,6 +1385,17 @@ def load_csv_database(specs_csv: str,
     idExperiment = _connect_db_experiment(specs_csv, IPD)
     _connect_db_antibody(specs_csv, IPD)
     connect_db_cells(idExperiment, specs_csv, IPD, threshold)
+
+def experiments():
+    warnings.filterwarnings('ignore')
+    
+    params = _config()
+    conn = mysql.connector.connect(**params)
+    
+    experiments_query = """SELECT * FROM experiments;"""
+    experiments_df = pd.read_sql(sql=experiments_query, con=conn)
+    
+    return experiments_df
 
 def delete_experiment(idExperiment: int):
     params = _config()
