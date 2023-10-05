@@ -101,6 +101,31 @@ def _read_antibodies(csv_file: str) -> list:
     
     return antibodies
 
+def filter_antibodies(protein_filepath: pd.DataFrame,
+                      csv_file: str) -> pd.DataFrame:
+    """
+    Filters ADT protein table using only antibodies found in 
+    a user-provided spreadsheet
+    
+    Parameters:
+        protein_filepath (str): file path to protein data
+        csv_file (str): file path to provided spreadsheet
+    
+    Returns:
+        filt_df (pd.DataFrame): dataframe containing rows
+            that reflect antibodies listed in the spreadsheet
+    """
+    
+    antibody_pairs = _read_antibodies(csv_file)
+    antibodies_list = [ab[0] for ab in antibody_pairs]
+
+    protein_data = pd.read_csv(protein_filepath, sep=',', index_col=[0])
+    
+    # Subset the columns that are in our spreadsheet
+    filt_df = protein_data.loc[antibodies_list]
+    
+    return filt_df
+
 def _ab_dict(specs_csv: str) -> dict:
     """
     Constructs a dictionary of each antibody name with their id
@@ -743,7 +768,17 @@ def _connect_db_procedures():
         cursor.close()
         conn.close()
 
-def extra_ab_info(ab_id: str):
+def extra_ab_info(ab_id: str) -> pd.DataFrame:
+    """
+    Retrieves additional information about an antibody using SciCrunch
+
+    Parameters:
+        ab_id (str): antibody id
+    
+    Returns:
+        final_df (pd.DataFrame): dataframe containing various
+            information about an antibody (target, clonality, etc)
+    """
     encoding = urllib.parse.quote(ab_id, safe='', encoding=None, errors=None)
     url = f"https://scicrunch.org/php/data-federation-csv.php?orMultiFacets=true&count=10000&nifid=nif-0000-07730-1&exportType=data&q={encoding}&offset=0"
     
@@ -852,7 +887,17 @@ def _connect_db_antibody(specs_csv: str, IPD):
         cursor.close()
         conn.close()
 
-def convert_idBTO_readable(idBTO: str):
+def convert_idBTO_readable(idBTO: str) -> str:
+    """
+    Converts a tissue ontology ID into its common tissue name
+
+    Parameters:
+        idBTO (str): tissue ontology ID
+    
+    Returns:
+        tissueType (str): tissue name from tissue ontology ID
+    """
+
     idBTO_params = {
         'q': idBTO,
         'ontology': 'bto',
@@ -864,9 +909,9 @@ def convert_idBTO_readable(idBTO: str):
     
     res = requests.get(EBI_BASE, params=idBTO_params)
     res_JSON = res.json()
-    cellType = res_JSON['response']['docs'][0]['label']
+    tissueType = res_JSON['response']['docs'][0]['label']
     
-    return cellType
+    return tissueType
 
 def _connect_db_experiment(specs_csv: str, IPD) -> int:
     """
@@ -1088,6 +1133,16 @@ def _connect_db_antigen_expression(idExperiment: int,
                 f.write(f"[{time}] {error}\n")
 
 def convert_idCL_readable(idCL:str):
+    """
+    Converts a cell ontology ID into its common cell type name
+
+    Parameters:
+        idCL (str): cell ontology ID
+    
+    Returns:
+        cellType (str): cell type name from cell ontology ID
+    """
+
     idCL_params = {
         'q': idCL,
         'ontology': 'cl',
@@ -1386,7 +1441,11 @@ def load_csv_database(specs_csv: str,
     _connect_db_antibody(specs_csv, IPD)
     connect_db_cells(idExperiment, specs_csv, IPD, threshold)
 
-def experiments():
+def experiments() -> pd.DataFrame:
+    """
+    Returns all experiments in the current database
+    """
+    
     warnings.filterwarnings('ignore')
     
     params = _config()
