@@ -16,6 +16,8 @@ from pyensembl import EnsemblRelease
 from gtfparse import read_gtf
 
 import requests
+import multiprocessing
+import multiprocess
 
 def setup_singleR():
     """
@@ -126,7 +128,7 @@ def singleR(rna_count_df: pd.DataFrame,
             r_df = robjects.conversion.get_conversion().py2rpy(rna_counts_sub)
             print("Running SingleR...")
             # Run SingleR
-            srLabels = sr.SingleR(test=r_df, ref=HPCA_rds, labels=dollar(HPCA_rds, "label.ont"))
+            srLabels = sr.SingleR(test=r_df, ref=HPCA_rds, labels=dollar(HPCA_rds, "label.ont"), prune=False)
 
     # Else, keep current gene names
     elif num_rows != num_ensembl:
@@ -139,7 +141,7 @@ def singleR(rna_count_df: pd.DataFrame,
             r_df = robjects.conversion.get_conversion().py2rpy(rna_counts)
             print("Running SingleR...")
             # Run SingleR
-            srLabels = sr.SingleR(test=r_df, ref=HPCA_rds, labels=dollar(HPCA_rds, "label.ont"))
+            srLabels = sr.SingleR(test=r_df, ref=HPCA_rds, labels=dollar(HPCA_rds, "label.ont"), prune=False)
 
     # Convert SingleR R data frame to a pandas df
     with (robjects.default_converter + pandas2ri.converter).context():
@@ -159,8 +161,7 @@ def convert_idCL_readable(idCL:str) -> str:
         idCL (str): cell ontology ID
 
     Returns:
-        cellType (str): readable cell type name
-
+        cellType (str): readable cell type name    
     """
     idCL_params = {
         'q': idCL,
@@ -198,41 +199,151 @@ def ebi_idCL_map(labels_df: pd.DataFrame) -> dict:
     
     return idCL_map
 
+def generate_range(size: int, 
+                   interval_size: int = 2000,
+                   start: int = 0) -> list:
+    """
+    Splits a range of numbers into partitions based on a
+    provided interval size. Partitions will only contain
+    the begin and end of a range. Ex: [[0, 10], [10, 20]]
+    
+    Parameters:
+        size (int): total size of the range
+        interval_size (int): desired partition sizes 
+        start (int): index to begin partitioning the range
+    
+    Returns:
+        start_stop_ranges (list): list of lists, containing
+            the start and end of a partition. 
+    """
+    
+    if interval_size <= 1:
+        raise ValueError("Chunk or partition size must be greater than 1.")
+    
+    iterable_range = [i for i in range(size + 1)]
+
+    end = max(iterable_range)
+    step = interval_size
+    
+    start_stop_ranges = []
+    
+    for i in range(start, end, step): 
+        x = i 
+        start_stop_ranges.append([iterable_range[x:x+step][0], 
+                                  iterable_range[x:x+step+1][-1]])
+    
+    return start_stop_ranges
+
+def clean_chunks(chunk_list: list) -> list:
+    """
+    Merges any chunks in a list that only contain one element with 
+    the previous chunk. This is because SingleR requires at least 
+    two cells at once to run.
+    
+    Parameters:
+        chunk_list (list): list of lists containing start and end values
+        
+    Returns:
+        chunk_list (list): updated list of lists without any lists
+            that contain a single element
+    """
+    final_chunk = chunk_list[-1]
+    size_final_chunk = final_chunk[1] - final_chunk[0]
+    
+    if size_final_chunk == 1:
+        # Update the second to last chunk with the last chunk
+        # "Merge" by adding the last chunk to the second to last chunk
+        # and delete the last chunk
+        chunk_list[-2][1] = chunk_list[-2][1] + 1
+        chunk_list.pop()
+        
+    return chunk_list
+
+def singleR_parallel(rna, chunk_size=20000, partition_size=2000):
+    """
+    Executes SingleR using parallelized batch processing with 
+    a provided RNA dataframe.
+    
+    Large RNA dataframes will be divided into large 'chunks', which 
+    are divided into smaller 'partitions'.
+    
+    Chunks will be evaluated sequentially, while partitions inside a chunk
+    will be evaluated in parallel using SingleR.
+    
+    Parameters:
+        rna (pd.DataFrame): sparse pandas dataframe containing RNA data
+            with rows (cells) x columns (genes)
+        chunk_size (int): size of a chunk within the RNA dataframe
+        partition_size (int): size of a partition within a chunk
+        
+    Returns:
+        all_labels (pd.DataFrame): singleR output with cell labels
+        all_singleR (pd.DataFrame): singleR output with label certainties
+    """
+    chunk_ranges = clean_chunks(generate_range(len(rna.index), 
+                                               start=0, 
+                                               interval_size=chunk_size))
+    all_labels_list = []
+    all_singleR_list = []
+    
+    def process_section(section):
+        cells_batch = rna.iloc[section[0] : section[1]].sparse.to_dense()
+        print(f"Running SingleR on partition section: {section}\n")
+        labels_df, singleR_df = singleR(cells_batch)
+        return labels_df, singleR_df
+    
+    for chunk in chunk_ranges:
+        print("Chunk section:", chunk)
+        partition_ranges = clean_chunks(generate_range(chunk[1], 
+                                                       interval_size=partition_size, 
+                                                       start=chunk[0]))
+
+        # Create a multiprocessing pool
+        with multiprocess.Pool(processes=multiprocessing.cpu_count()) as pool:
+            results = pool.map(process_section, partition_ranges)
+
+        for labels_df, singleR_df in results:
+            all_labels_list.append(labels_df)
+            all_singleR_list.append(singleR_df)
+            
+    return pd.concat(all_labels_list), pd.concat(all_singleR_list)
+
 def annotate_cells(IPD,
+                   chunk_size: int = 20000,
+                   partition_size: int = 2000,
                    ref_ver: int = 75):
     """
     Annotates cells using RNA data from an ImmunoPhenoData object
-
+    
     Parameters:
         IPD (ImmunoPhenoData object): object that must contain gene data along
             with protein data
+        chunk_size (int): size of a chunk used to divide a large RNA dataframe
+        partition_size (int): size of a partition within a chunk used
+            when running SingleR in parallel
         ref_ver (int): version number for reference dataset
     """
-
-    # If RNA data is provided, we can run singleR to get the idCLs and certainty metrics
+    
     if IPD.gene_cleaned is not None:
         rna_counts = IPD.gene_cleaned
-
         # Setup singleR
         setup_singleR()
-
-        # Run singleR
-        labels_df, singleR_df = singleR(rna_counts, ref_ver)
-
-        # With this dataframe, convert the 'idCL' key with the common name
-        # Saves us the need to do this later
+        
+        # Run parallelized version of SingleR
+        labels_df, singleR_df = singleR_parallel(rna_counts,chunk_size, partition_size)
         
         # Create mapping dictionary of idCLs to cell type names
         complete_map_dict = ebi_idCL_map(labels_df)
-
+        
         labels_df['celltype'] = labels_df['labels'].map(complete_map_dict)
-
+        
+        # Store in IPD object
         IPD.raw_cell_labels = labels_df
         IPD._temp_labels = labels_df
-
+        
         IPD.label_certainties = singleR_df
         IPD._temp_certainties = singleR_df
-
+        
         print("Finished running SingleR.")
     else:
         raise Exception("Error. No RNA data found. Unable to annotate cells.")
