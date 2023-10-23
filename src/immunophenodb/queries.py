@@ -21,7 +21,7 @@ SCI_RRID_ENDPOINT = "/resolver/"
 SCI_FILE = ".json"
 UNIPROT_BASE = "https://rest.uniprot.org"
 UNIPROT_ENDPOINT = "/uniprotkb/search"
-EBI_BASE = "https://www.ebi.ac.uk/ols/api/search"
+EBI_BASE = "https://www.ebi.ac.uk/ols4/api/search"
 
 def _read_cells(csv_file: str) -> list:
     """
@@ -833,7 +833,7 @@ def _connect_db_antibody(specs_csv: str, IPD):
             cursor.execute(check_ab_exists_query, (ab_id_pair[1], ))
             ab_exists_result = cursor.fetchone()[0]
 
-            if ab_exists_result == 1:
+            if ab_exists_result == 1 or ab_id_pair[0] not in IPD._protein_matrix.columns:
                 # Antibody already exists, we can skip 
                 continue
             else:
@@ -1198,7 +1198,7 @@ def connect_db_cells(idExperiment: int,
     if IPD.raw_cell_labels is None or IPD.label_certainties is None:
         raise Exception("Error. No cell labels found. Run annotate_cells() first.")
 
-    labels = IPD.raw_cell_labels
+    labels = IPD.raw_cell_labels["celltype"]
     deltas = IPD.label_certainties
 
     # Apply any filtering by delta or certainity value
@@ -1222,8 +1222,11 @@ def connect_db_cells(idExperiment: int,
             if cell_exists_result == 0:
                 try:
                     # Get readable idCL name and link
-                    idCL_info = convert_idCL_readable(row['labels'])
-                    cell_type_name = idCL_info['label']
+                    # idCL_info = convert_idCL_readable(row['labels'])
+                    # cell_type_name = idCL_info['label']
+
+                    # EDIT: We already have the readable name from annotate_cells, no need to do it here
+                    cell_type_name = row['celltype']
 
                     cursor.callproc("insert_cell", args=(row['labels'], index, idExperiment, row['delta.next'],
                                                          cell_type_name))
@@ -1413,8 +1416,7 @@ def link_antigen(ab_id_pair: list,
         cursor.close()
         conn.close()
 
-def load_csv_database(specs_csv: str,
-                      IPD,
+def load_csv_database(IPD,
                       threshold: float = 0):
     """
     Wrapper function to populate the entire database using a spreadsheet
@@ -1422,8 +1424,6 @@ def load_csv_database(specs_csv: str,
     from the ImmunoPheno package
 
     Parameters:
-        specs_csv (str): name of csv file containing a spreadsheet with
-            information about the experiment and antibodies
         IPD (ImmunoPhenoData object): object containing protein data, 
             gene data, cell labels, and cell certainties 
         threshold (float): value to filter cells based on the certainty value
@@ -1437,9 +1437,9 @@ def load_csv_database(specs_csv: str,
     _connect_db_procedures()
 
     # Retrieve idExperiment after putting into database
-    idExperiment = _connect_db_experiment(specs_csv, IPD)
-    _connect_db_antibody(specs_csv, IPD)
-    connect_db_cells(idExperiment, specs_csv, IPD, threshold)
+    idExperiment = _connect_db_experiment(IPD._spreadsheet, IPD)
+    _connect_db_antibody(IPD._spreadsheet, IPD)
+    connect_db_cells(idExperiment, IPD._spreadsheet, IPD, threshold)
 
 def experiments() -> pd.DataFrame:
     """
