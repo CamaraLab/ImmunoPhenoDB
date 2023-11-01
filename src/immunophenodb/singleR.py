@@ -161,7 +161,8 @@ def convert_idCL_readable(idCL:str) -> str:
         idCL (str): cell ontology ID
 
     Returns:
-        cellType (str): readable cell type name    
+        cellType (str): readable cell type name
+        
     """
     idCL_params = {
         'q': idCL,
@@ -287,7 +288,15 @@ def singleR_parallel(rna, chunk_size=20000, partition_size=2000):
     all_singleR_list = []
     
     def process_section(section):
-        cells_batch = rna.iloc[section[0] : section[1]].sparse.to_dense()
+        # Check if all columns in section are sparse. If so, convert to dense
+        all_types = rna.iloc[section[0] : section[1]].dtypes
+
+        if all(isinstance(t, pd.core.arrays.sparse.dtype.SparseDtype) for t in all_types):
+            cells_batch = rna.iloc[section[0] : section[1]].sparse.to_dense()
+        # Otherwise, use default dataframe which is not sparse
+        else:
+            cells_batch = rna.iloc[section[0] : section[1]]
+
         print(f"Running SingleR on partition section: {section}\n")
         labels_df, singleR_df = singleR(cells_batch)
         return labels_df, singleR_df
@@ -324,8 +333,8 @@ def annotate_cells(IPD,
         ref_ver (int): version number for reference dataset
     """
     
-    if IPD.gene_cleaned is not None:
-        rna_counts = IPD.gene_cleaned
+    if IPD._singleR_rna is not None:
+        rna_counts = IPD._singleR_rna
         # Setup singleR
         setup_singleR()
         
