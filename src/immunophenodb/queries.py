@@ -823,7 +823,7 @@ def _connect_db_antibody(specs_csv: str, IPD):
     # Read all antibodies from csv file ('CD90', 'AB_123')
     antibodies = _read_antibodies(specs_csv)
 
-    with _tqdm_output(tqdm(antibodies)) as tqdm_ab:
+    with _tqdm_output(tqdm(antibodies, total=len(IPD.protein.columns))) as tqdm_ab:
         for ab_id_pair in tqdm_ab:
             # CHECK: Does this antibody id exist in the database?
             check_ab_exists_query = """SELECT COUNT(*)
@@ -1008,6 +1008,38 @@ def _connect_db_experiment(specs_csv: str, IPD) -> int:
     
     return id_result
 
+def _experiment_idCell_map(idExperiment: int) -> dict:
+    """
+    Creates a dictionary using the database 'cells' table
+    
+    Parameters:
+        idExperiment (int): experiment ID to retrieve all cells
+            for that particular experiment
+        
+    Returns:
+        cells_dict (dict): dictionary containing
+            key: barcode tags for individual cells
+            values: idCell, an auto-increment value for a given cell 
+    """
+    
+    # Connect to database
+    params = _config()
+    print('Connecting to the MySQL database...')
+    conn = mysql.connector.connect(**params)
+    print("Connected to db\n")
+    cursor = conn.cursor()
+    
+    cells_table_query = """SELECT cells.idCellOriginal, cells.idCell
+                        FROM cells
+                        WHERE cells.idExperiment = (%s);""" % (idExperiment)
+    
+    cells_df = pd.read_sql(sql=cells_table_query, con=conn)
+    
+    # Create mapping dict using columns "idCellOriginal" and "idCell"
+    cells_dict = dict(zip(cells_df.idCellOriginal, cells_df.idCell))
+    
+    return cells_dict
+
 def _connect_db_antigen_expression(idExperiment: int,
                                    specs_csv: str,
                                    IPD):
@@ -1032,7 +1064,7 @@ def _connect_db_antigen_expression(idExperiment: int,
     errors = []
     ab_lookup = _ab_dict(specs_csv)
 
-    raw_counts = IPD.protein_cleaned
+    raw_counts = IPD.protein
     classified_counts = IPD.classified_filt
     normalized_counts = IPD.normalized_counts
 
@@ -1042,6 +1074,10 @@ def _connect_db_antigen_expression(idExperiment: int,
 
     # Iterate over columns, with antibody name and count values
     with _tqdm_output(tqdm(normalized_counts.items(), total=num_antibodies)) as tqdm_normalized:
+        # Create a map for all cells for this given experiment
+        # This will contain "idCellOriginal" : "idCell" as a dictionary entry pair
+        cells_map = _experiment_idCell_map(idExperiment)
+
         for ab, counts in tqdm_normalized:
             # Get the corresponding antibody id for this antibody
             ab_id = ab_lookup[ab]
@@ -1067,21 +1103,22 @@ def _connect_db_antigen_expression(idExperiment: int,
                 # Start parsing through each cell for this antibody
                 for cell_name, value in counts.items():
                     # Get the matching idCell for this cell 
-                    idCell_query = """SELECT idCell
-                                    FROM cells
-                                    WHERE cells.idCellOriginal=(%s)
-                                    AND cells.idExperiment=(%s)"""
+                    # idCell_query = """SELECT idCell
+                    #                 FROM cells
+                    #                 WHERE cells.idCellOriginal=(%s)
+                    #                 AND cells.idExperiment=(%s)"""
 
-                    cursor_idCell.execute(idCell_query, (cell_name, idExperiment))
+                    # cursor_idCell.execute(idCell_query, (cell_name, idExperiment))
                     
-                    idCell_res = cursor_idCell.fetchone()
+                    # idCell_res = cursor_idCell.fetchone()
+                    idCell = cells_map[cell_name]
 
-                    # Check if idCell exists in database
-                    if idCell_res is not None:
-                        idCell = idCell_res[0]
-                    # If it doesn't, then skip this cell.
-                    else:
-                        continue
+                    # # Check if idCell exists in database
+                    # if idCell_res is not None:
+                    #     idCell = idCell_res[0]
+                    # # If it doesn't, then skip this cell.
+                    # else:
+                    #     continue
 
                     # Grab the raw value of this cell-antibody match
                     ab_raw_val = int(raw_counts.loc[cell_name][ab])
@@ -1345,7 +1382,7 @@ def link_antigen(ab_id_pair: list,
     ab_name = ab_id_pair[0]
     ab_id = ab_id_pair[1]
 
-    raw_counts = IPD.protein_cleaned
+    raw_counts = IPD.protein
     classified_counts = IPD.classified_filt
     normalized_counts = IPD.normalized_counts
     num_cells = len(normalized_counts.index)
