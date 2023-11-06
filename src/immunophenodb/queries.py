@@ -1342,9 +1342,21 @@ def link_ab_uniprot(ab_id_pair: list,
     try:
         for hit in hits:
             alias, clonalBool, host, uniprotID, cloneID, otherAliases = hit
+
+            # Make request to Antibody Registry for additional info
+            results_df = extra_ab_info(ab_id_pair[1])
+            ab_name = str(results_df.loc[0]['ab_name'])
+            ab_target = str(results_df.loc[0]['ab_target'])
+            citation = str(results_df.loc[0]['proper_citation'])
+            comments = str(results_df.loc[0]['comments'])
+            vendor = str(results_df.loc[0]['vendor'])
+            catalogNum = str(results_df.loc[0]['catalog_num']) # this will be a str varchar in db
+
             print(f"Manually inserting {ab_id_pair[0]}...")
             cursor.callproc('insert_antibody', 
-                            args=(ab_id_pair[1], alias, uniprotID, clonalBool, host, cloneID))
+                            args=(ab_id_pair[1], alias, uniprotID, clonalBool, host, cloneID,
+                                  ab_name, ab_target, citation, comments, vendor, catalogNum))
+            
             # Commit query changes
             conn.commit()
 
@@ -1401,23 +1413,28 @@ def link_antigen(ab_id_pair: list,
         ab_norm_counts = normalized_counts.loc[:, ab_name].items()
         # Look into normalized counts
         with _tqdm_output(tqdm(ab_norm_counts, total=num_cells)) as tqdm_normalized:
+            # Create a map for all cells for this given experiment
+            # This will contain "idCellOriginal" : "idCell" as a dictionary entry pair
+            cells_map = _experiment_idCell_map(idExperiment)
+
             for cell_name, value in tqdm_normalized:
                 # Get the matching idCell for this cell 
-                idCell_query = """SELECT idCell
-                                FROM cells
-                                WHERE cells.idCellOriginal=(%s)
-                                AND cells.idExperiment=(%s)"""
+                # idCell_query = """SELECT idCell
+                #                 FROM cells
+                #                 WHERE cells.idCellOriginal=(%s)
+                #                 AND cells.idExperiment=(%s)"""
 
-                cursor.execute(idCell_query, (cell_name, idExperiment))
+                # cursor.execute(idCell_query, (cell_name, idExperiment))
                 
-                idCell_res = cursor.fetchone()
+                # idCell_res = cursor.fetchone()
+                idCell = cells_map[cell_name]
 
-                # Check if idCell exists in database
-                if idCell_res is not None:
-                    idCell = idCell_res[0]
-                # If it doesn't, then skip this cell.
-                else:
-                    continue
+                # # Check if idCell exists in database
+                # if idCell_res is not None:
+                #     idCell = idCell_res[0]
+                # # If it doesn't, then skip this cell.
+                # else:
+                #     continue
 
                 # Grab the raw value of this cell-antibody match
                 ab_raw_val = int(raw_counts.loc[cell_name][ab_name])
@@ -1461,6 +1478,8 @@ def load_csv_database(IPD,
     from the ImmunoPheno package
 
     Parameters:
+        specs_csv (str): name of csv file containing a spreadsheet with
+            information about the experiment and antibodies
         IPD (ImmunoPhenoData object): object containing protein data, 
             gene data, cell labels, and cell certainties 
         threshold (float): value to filter cells based on the certainty value
