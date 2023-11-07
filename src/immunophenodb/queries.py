@@ -1195,25 +1195,19 @@ def convert_idCL_readable(idCL:str):
     
     return cellType
 
-def connect_db_cells(idExperiment: int,
+def _connect_db_cells(idExperiment: int,
                      specs_csv: str,
-                     IPD,
-                     threshold: float = 0):
+                     IPD):
     """
     Connects to a database and inserts information into the cells table
-    and updates the antigen_expression table. This function can be called
-    repeatedly with adjustments to the threshold.
+    and updates the antigen_expression table.
 
     Parameters:
         idExperiment (int): the id of the experiment inserted in the database
         specs_csv (str): name of csv file containing a spreadsheet with
             information about the experiment and antibodies
         IPD (ImmunoPhenoData object): object containing protein data, 
-            gene data, cell labels, and cell certainties 
-        threshold (float): value to filter cells based on the certainty value
-            calculated by singleR.
-            Ex: Setting threshold = 0.1 will filter out all cells that 
-            have a certainty value less than 0.1
+            gene data, cell labels, and cell certainties
     """
     # Connect to database
     params = _config()
@@ -1240,14 +1234,13 @@ def connect_db_cells(idExperiment: int,
 
     # Apply any filtering by delta or certainity value
     combined = pd.concat([labels, deltas], axis=1)
-    combined_filt = combined[combined['delta.next'] > threshold]
 
     # Apply same filtering to cells that were filtered out during normalization
-    combined_filt_norm = combined_filt.loc[IPD.normalized_counts.index]
+    combined_norm = combined.loc[IPD.normalized_counts.index]
 
     print("Inserting new cells...")  
     # Insert cells that are in the combined singleR dataframe
-    with _tqdm_output(tqdm(combined_filt_norm.iterrows(), total=len(combined_filt_norm))) as tqdm_cells:
+    with _tqdm_output(tqdm(combined_norm.iterrows(), total=len(combined_norm))) as tqdm_cells:
         for index, row in tqdm_cells:
             check_cell_exists_query = """SELECT COUNT(*)
                                     FROM cells
@@ -1282,7 +1275,7 @@ def connect_db_cells(idExperiment: int,
     db_cells_list = [cell[0] for cell in db_cells]
 
     # Cells in dataframe
-    sr_cells = combined_filt_norm.index
+    sr_cells = combined_norm.index
 
     # Find difference between two using XOR operator
     diff = set(db_cells_list) ^ set(sr_cells)
@@ -1470,8 +1463,7 @@ def link_antigen(ab_id_pair: list,
         cursor.close()
         conn.close()
 
-def load_csv_database(IPD,
-                      threshold: float = 0):
+def load_csv_database(IPD):
     """
     Wrapper function to populate the entire database using a spreadsheet
     containing an experiment and antibodies along with an ImmunoPhenoData object
@@ -1482,10 +1474,6 @@ def load_csv_database(IPD,
             information about the experiment and antibodies
         IPD (ImmunoPhenoData object): object containing protein data, 
             gene data, cell labels, and cell certainties 
-        threshold (float): value to filter cells based on the certainty value
-            calculated by singleR.
-            Ex: Setting threshold = 0.1 will filter out all cells that 
-            have a certainty value less than 0.1
     """
     
     # Create tables and procedures
@@ -1495,7 +1483,7 @@ def load_csv_database(IPD,
     # Retrieve idExperiment after putting into database
     idExperiment = _connect_db_experiment(IPD._spreadsheet, IPD)
     _connect_db_antibody(IPD._spreadsheet, IPD)
-    connect_db_cells(idExperiment, IPD._spreadsheet, IPD, threshold)
+    _connect_db_cells(idExperiment, IPD._spreadsheet, IPD)
 
 def experiments() -> pd.DataFrame:
     """
