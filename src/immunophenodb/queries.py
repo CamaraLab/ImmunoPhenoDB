@@ -1610,6 +1610,11 @@ def delete_experiment(idExperiment: int):
     print(f"Deleting rows in 'cells' for experiment {idExperiment}...")
     cursor.execute(delete_cells_query, (idExperiment, ))
     conn.commit()
+
+    # Reset cells increment counter
+    alter_cells = "ALTER TABLE cells AUTO_INCREMENT=1"
+    cursor.execute(alter_cells)
+    conn.commit()
     
     # Delete cell types 
     for idCL in idCL_to_delete:
@@ -1637,6 +1642,11 @@ def delete_experiment(idExperiment: int):
     delete_experiment_query = """DELETE FROM experiments
                             WHERE experiments.idExperiment = (%s)"""
     cursor.execute(delete_experiment_query, (idExperiment, ))
+    conn.commit()
+
+    # Reset increment counter in experiments
+    alter_experiments = "ALTER TABLE experiments AUTO_INCREMENT=1"
+    cursor.execute(alter_experiments)
     conn.commit()
     
     # If there was only one experiment, remove the tissue
