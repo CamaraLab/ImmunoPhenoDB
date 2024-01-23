@@ -933,13 +933,13 @@ def _connect_db_experiment(specs_csv: str, IPD) -> int:
     ab_id_pairs = _read_antibodies(specs_csv)
     ab_names = set([ab_id[0] for ab_id in ab_id_pairs])
 
-    differences = set(ab_names).difference(set(protein_counts.columns))
-    # If there are antibodies in the spreadsheet that are not in the data, raise exception
-    if len(differences) > 0:
-        for ab in differences:
-            logging.warning(f"ERROR: Antibody {ab} in spreadsheet not found in dataset")
+    # differences = set(ab_names).difference(set(protein_counts.columns))
+    # # If there are antibodies in the spreadsheet that are not in the data, raise exception
+    # if len(differences) > 0:
+    #     for ab in differences:
+    #         logging.warning(f"ERROR: Antibody {ab} in spreadsheet not found in dataset")
         
-        raise Exception("Mismatched antibody names between spreadsheet and protein data.")
+    #     raise Exception("Mismatched antibody names between spreadsheet and protein data.")
 
     experiment = _read_experiment(specs_csv)
 
