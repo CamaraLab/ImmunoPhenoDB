@@ -15,8 +15,8 @@ COPY . .
 RUN npm install
 RUN npm run build
 
-# our app is running on port 5000 within the container, so need to expose it
-EXPOSE 3000
+# our app is running on port 8080 within the container, so need to expose it
+EXPOSE 8080
 
 # the command that starts our app
 CMD ["node", "dist/index.js"]
