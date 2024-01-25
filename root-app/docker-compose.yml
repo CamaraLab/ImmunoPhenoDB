@@ -2,26 +2,18 @@ version: "3.8"
 services:
     node:
         restart: always
-        # image: camaralab/db_server:nodedbarm
-        # image: camaralab/db_server:nodedb
         build:
             context: ./node-api
         ports:
-            - "3000:3000"
-        # env_file:
-        #     - .env
+            - "8080:8080"
     nginx:
         restart: always
-        # image: camaralab/db_server:nginxdbarm
-        # image: camaralab/db_server:nginxdb
         build:
             context: ./nginx
         ports:
             - "80:80"
     flask:
         restart: always
-        # image: camaralab/db_server:flaskdbarm
-        # image: camaralab/db_server:flaskdb
         build:
           context: ./flask-api
         ports:
