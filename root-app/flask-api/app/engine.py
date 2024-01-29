@@ -286,6 +286,10 @@ def spark_query_ab_lmm(antibody_id: str, node_fam_dict: dict) -> tuple:
     # Skip this antibody by just returning a tuple() containing the antibody ID
     if len(set(result_df["cellType"])) <= 1:
         return (antibody_id, )
+    
+    # EDGE CASE: If all normalized values in result_df are background, it will cause the LMM to produce NaN values
+    if (set(result_df["normValue"]) == {0}):
+        return (antibody_id, )
 
     # PART 2: run LMM
     # Start LMM
@@ -500,7 +504,7 @@ def lmm_ab_list_to_df(lmm_results: dict, parents: list) -> pd.DataFrame:
     antibodies = list(lmm_results.keys())
     
     idCL_dict = {k: [] for k in parents}
-    idCL_dict['not_idCLs'] = []
+    idCL_dict['other'] = []
     
     # Loop over each antibody_id (key) in the outer dictionary
     for antibody_id, results in lmm_results.items():
@@ -509,15 +513,17 @@ def lmm_ab_list_to_df(lmm_results: dict, parents: list) -> pd.DataFrame:
         aggregate_df = results[1]
         bg_proportion = results[2]
         
-        cellType_coeff.append(float(lmm_table.loc['cellType']['Coef.']))
+        # Taking the negative of the coefficient
+        cellType_coeff.append(-1 * float(lmm_table.loc['cellType']['Coef.']))
         stdError.append(float(lmm_table.loc['cellType']['Std.Err.']))
         p_values.append(float(lmm_table.loc['cellType']['P>|z|']))
 
-        for key in parents:
-            value = aggregate_df.loc[key]['proportion']
-            idCL_dict[key].append(value)
+        for idCL in parents:
+            # Take (1 - proportion_background), which will instead show proportion of signal cells
+            proportion_background = aggregate_df.loc[idCL]['proportion']
+            idCL_dict[idCL].append(1 - proportion_background)
 
-        idCL_dict['not_idCLs'].append(bg_proportion)
+        idCL_dict['other'].append(bg_proportion)
             
     # Apply Benjamini Hochberg correction to all the p_values
     q_values = multipletests(p_values, method="fdr_bh")[1]
@@ -548,11 +554,351 @@ def lmm_ab_list_to_df(lmm_results: dict, parents: list) -> pd.DataFrame:
         ab_conv.append(ab_name)
     
     final_df.insert(0, 'target', ab_conv)
-    final_df.sort_values('coeff', inplace=True)
+    final_df.sort_values('coeff', ascending=False, inplace=True)
 
     return final_df
 
-def get_antibodies(node_fam_dict: dict, 
+def spark_query_custom_ab_lmm(antibody_id: str, 
+                              node_fam_dict: dict, 
+                              custom_background_fam_dict: dict):
+    # Extract all nodes in family, used as our target input
+    target_parents = list(node_fam_dict.keys())
+    target_children = [item for sublist in list(node_fam_dict.values()) for item in sublist]
+    target_family = target_parents + target_children
+
+    # Extract all nodes in the custom background cell types
+    background_parents = list(custom_background_fam_dict.keys())
+    background_children = [item for sublist in list(custom_background_fam_dict.values()) for item in sublist]
+    background_family = background_parents + background_children
+
+    # MySQL connection properties
+    mysql_properties = _config()
+    
+    # Convert port from string to int in the dictionary
+    mysql_properties['port'] = int(mysql_properties['port'])
+
+    # Connect to MySQL
+    connection = pymysql.connect(**mysql_properties)
+
+    # Create a cursor object
+    cursor = connection.cursor()
+
+    # Get cells for LMM
+    combined_query = """
+        SELECT
+            cells.idCell,
+            cells.idCellOriginal,
+            antigen_expression.normValue,
+            cells.idExperiment,
+            0 AS cellType -- marks cells that are associated with ab and cell type
+        FROM
+            antigen_expression
+            INNER JOIN cells ON antigen_expression.idCell = cells.idCell
+        WHERE
+            antigen_expression.idAntibody = %s
+            AND cells.idCL IN %s
+
+        UNION ALL  -- Use UNION ALL to combine the results of both queries
+
+        SELECT
+            cells.idCell,
+            cells.idCellOriginal,
+            antigen_expression.normValue,
+            cells.idExperiment,
+            1 AS cellType -- marks background cells based on provided cell type
+        FROM
+            antigen_expression
+            INNER JOIN cells ON antigen_expression.idCell = cells.idCell
+        WHERE
+            antigen_expression.idAntibody = %s
+            AND cells.idCL IN %s;
+    """
+
+    # Convert target idCLs to tuple
+    target_family_tuple = tuple(target_family)
+
+    # Convert background idCLs to tuple
+    background_family_tuple = tuple(background_family)
+
+    # Execute the combined query with parameters
+    cursor.execute(combined_query, (antibody_id, target_family_tuple, antibody_id, background_family_tuple))
+
+    # Fetch the results into a Pandas DataFrame
+    result_df = pd.DataFrame(cursor.fetchall(), columns=["idCell", "idCellOriginal", 
+                                                         "normValue", "idExperiment", "cellType"])
+    
+    # EDGE CASE: If the provided idCLs cover all the cells that are used by that antibody, it will cause the LMM to fail
+    # Skip this antibody by just returning an empty tuple()
+    if len(set(result_df["cellType"])) <= 1:
+        return (antibody_id, )
+    
+    # EDGE CASE: If all normalized values in result_df are background, it will cause the LMM to produce NaN values
+    if (set(result_df["normValue"]) == {0}):
+        return (antibody_id, )
+
+    # # Start LMM
+    lmm = smf.mixedlm("normValue ~ cellType", result_df, groups=result_df["idExperiment"])
+    summary_table = lmm.fit(method=["bfgs"])
+    lmm_res = retrieve_lmm(summary_table)
+
+    # Add in p-values manually (with increased precision)
+    p_values = summary_table.pvalues
+    core_copy = lmm_res.copy(deep=True).drop(columns='P>|z|')
+    core_copy['P>|z|'] = pd.Series(dtype="float64")
+    core_copy.loc['Intercept', 'P>|z|'] = p_values[0]
+    core_copy.loc['cellType', 'P>|z|'] = p_values[1]
+    
+    # We now want to find the percentage of background cells for our target cell types
+    with_query = """
+        SELECT
+            antigen_expression.idAntibody,
+            cells.idCL,
+            COUNT(antigen_expression.background) AS total_cells,
+            SUM(antigen_expression.background = 1) AS bg_cells,
+            SUM(antigen_expression.background = 1) / COUNT(antigen_expression.background) AS proportion
+        FROM
+            antigen_expression
+            INNER JOIN cells ON antigen_expression.idCell = cells.idCell
+            INNER JOIN (
+                SELECT DISTINCT antigen_expression.idCell
+                FROM antigen_expression
+                WHERE antigen_expression.idAntibody = %s
+            ) AS subquery_cells ON cells.idCell = subquery_cells.idCell
+            INNER JOIN (
+                SELECT DISTINCT cells.idCell
+                FROM cells
+                WHERE cells.idCell IN (
+                    SELECT antigen_expression.idCell
+                    FROM antigen_expression
+                    WHERE antigen_expression.idAntibody = %s
+                ) AND cells.idCL IN %s
+            ) AS subquery_cl ON cells.idCell = subquery_cl.idCell
+        WHERE
+            antigen_expression.idAntibody = %s
+        GROUP BY
+            cells.idCL;
+    """
+
+    # Execute the query 
+    cursor.execute(with_query, (antibody_id, antibody_id, target_family_tuple, antibody_id))
+    
+    prop_cells_with_idCL_df = pd.DataFrame(cursor.fetchall(), 
+                                           columns=["idAntibody", "idCL", "total_cells", "bg_cells", "proportion"])
+    
+    new_df = prop_cells_with_idCL_df.set_index('idCL')
+    df_idCLs = list(prop_cells_with_idCL_df['idCL'])
+    target_aggregate_df = pd.DataFrame(data=0, index=node_fam_dict.keys(), columns=['total_cells', 'bg_cells'])
+
+    # We want to aggregate idCLs that are parent-descendant related
+    for key, value in node_fam_dict.items():
+        # If our parent key has a value in the df
+        if key in df_idCLs:
+            # Add their total cells 
+            target_aggregate_df.loc[key]['total_cells'] += int(new_df.loc[key]['total_cells'])
+            # Add their background cells
+            target_aggregate_df.loc[key]['bg_cells'] += int(new_df.loc[key]['bg_cells'])
+            
+        for child in value:
+            if child in df_idCLs:
+                # Add their total cells to their parent's total_cells column
+                target_aggregate_df.loc[key]['total_cells'] += int(new_df.loc[child]['total_cells'])
+                # Add their background cells
+                target_aggregate_df.loc[key]['bg_cells'] += int(new_df.loc[child]['bg_cells'])
+                
+        # WARNING: if there are 0 cells for a given idCL for an antibody
+        if target_aggregate_df.loc[key]['total_cells'] == 0:
+            logging.warning(f"No cells found for type {key} in {antibody_id}. "
+                           "Background percentage will be set to NaN. ")
+
+    # Calculate the proportions of background cells for our target idCL into a new column
+    target_aggregate_df['proportion'] = target_aggregate_df['bg_cells']/target_aggregate_df['total_cells']
+
+    ########################################################################################
+    # We have to find the proportion of background cells for each of the custom background idCLs
+    without_query = """
+        SELECT
+            antigen_expression.idAntibody,
+            cells.idCL,
+            COUNT(antigen_expression.background) AS total_cells,
+            SUM(antigen_expression.background = 1) AS bg_cells,
+            SUM(antigen_expression.background = 1) / COUNT(antigen_expression.background) AS proportion
+        FROM
+            antigen_expression
+            INNER JOIN cells ON antigen_expression.idCell = cells.idCell
+            INNER JOIN (
+                SELECT DISTINCT antigen_expression.idCell
+                FROM antigen_expression
+                WHERE antigen_expression.idAntibody = %s
+            ) AS subquery_cells ON cells.idCell = subquery_cells.idCell
+            INNER JOIN (
+                SELECT DISTINCT cells.idCell
+                FROM cells
+                WHERE cells.idCell IN (
+                    SELECT antigen_expression.idCell
+                    FROM antigen_expression
+                    WHERE antigen_expression.idAntibody = %s
+                ) AND cells.idCL IN %s
+            ) AS subquery_cl ON cells.idCell = subquery_cl.idCell
+        WHERE
+            antigen_expression.idAntibody = %s
+        GROUP BY
+            cells.idCL;
+    """
+
+    # Execute the query 
+    cursor.execute(without_query, (antibody_id, antibody_id, background_family_tuple, antibody_id))
+    
+    prop_cells_without_idCL_df = pd.DataFrame(cursor.fetchall(), 
+                                           columns=["idAntibody", "idCL", "total_cells", "bg_cells", "proportion"])
+    
+    without_new_df = prop_cells_without_idCL_df.set_index('idCL')
+
+    # We also need to aggregate this now too
+    background_df_idCLs = list(prop_cells_without_idCL_df['idCL'])
+    background_aggregate_df = pd.DataFrame(data=0, 
+                                           index=custom_background_fam_dict.keys(), 
+                                           columns=['total_cells', 'bg_cells'])
+
+    # We want to aggregate idCLs that are parent-descendant related
+    for key, value in custom_background_fam_dict.items():
+        # If our parent key has a value in the df
+        if key in background_df_idCLs:
+            # Add their total cells 
+            background_aggregate_df.loc[key]['total_cells'] += int(without_new_df.loc[key]['total_cells'])
+            # Add their background cells
+            background_aggregate_df.loc[key]['bg_cells'] += int(without_new_df.loc[key]['bg_cells'])
+            
+        for child in value:
+            if child in background_df_idCLs:
+                # Add their total cells to their parent's total_cells column
+                background_aggregate_df.loc[key]['total_cells'] += int(without_new_df.loc[child]['total_cells'])
+                # Add their background cells
+                background_aggregate_df.loc[key]['bg_cells'] += int(without_new_df.loc[child]['bg_cells'])
+                
+        # WARNING: if there are 0 cells for a given idCL for an antibody
+        if background_aggregate_df.loc[key]['total_cells'] == 0:
+            logging.warning(f"No cells found for type {key} in {antibody_id}. "
+                           "Background percentage will be set to NaN. ")
+
+    # Calculate the proportions of background cells into a new column
+    background_aggregate_df['proportion'] = background_aggregate_df['bg_cells']/background_aggregate_df['total_cells']
+    
+    # Close the cursor and MySQL connection
+    cursor.close()
+    connection.close()
+
+    return (antibody_id, core_copy, target_aggregate_df, background_aggregate_df)
+
+def run_spark_query_custom_ab_lmm(antibody_ids: list, 
+                                  node_fam_dict: dict, 
+                                  custom_background_fam_dict: dict):
+    # Create a Spark session
+    spark = SparkSession.builder.appName("ParallelMySQLQuery").getOrCreate()
+
+    # We've already provided the idCLs to iterate over
+    num_parallel_queries = 100
+
+    # Create an RDD 
+    rdd_abs = spark.sparkContext.parallelize(antibody_ids, num_parallel_queries)
+
+    # Run the spark_query_ab_lmm in parallel and store in a list of dataframes
+    results = rdd_abs.map(lambda x: spark_query_custom_ab_lmm(x, node_fam_dict, 
+                                                              custom_background_fam_dict)).collect()
+    
+    # Stop spark
+    spark.stop()
+
+    # Convert this list of results into a dictionary
+    # where keys: antibody id, value: (LMM, target_aggregate_df, background_aggregate_df)
+    # Organize results based on antibody
+    ab_lmm_dict = {}
+    for result in results:
+        # EDGE CASE: If there were no results for a given antibody, it will be a tuple with only the antibody ID
+        # Skip it
+        antibody_name = result[0]
+        if len(result) == 1:
+            continue
+            
+        if antibody_name in antibody_ids:
+            ab_lmm_dict[antibody_name] = (result[1], result[2], result[3])
+
+    return ab_lmm_dict
+
+def lmm_custom_ab_list_to_df(lmm_results: dict, 
+                             target_idCL_parents: list, 
+                             background_idCL_parents: list) -> pd.DataFrame:
+    
+    cellType_coeff = []
+    stdError = []
+    p_values = []
+
+    antibodies = list(lmm_results.keys())
+    
+    target_idCL_dict = {k: [] for k in target_idCL_parents}
+    background_idCL_dict = {k: [] for k in background_idCL_parents}
+    
+    # Loop over each antibody_id (key) in the outer dictionary
+    for antibody_id, results in lmm_results.items():
+        # results is: LMM table, target_aggregate_df, background_aggregate_df
+        lmm_table = results[0]
+        target_aggregate_df = results[1]
+        background_aggregate_df = results[2]
+
+        # Add LMM results in
+        # Taking the negative of the coefficient
+        cellType_coeff.append(-1 * float(lmm_table.loc['cellType']['Coef.']))
+        stdError.append(float(lmm_table.loc['cellType']['Std.Err.']))
+        p_values.append(float(lmm_table.loc['cellType']['P>|z|']))
+
+        # Add target proportions in
+        for idCL in target_idCL_parents:
+            # Take (1 - proportion_background), which will instead show proportion of signal cells
+            proportion = target_aggregate_df.loc[idCL]['proportion']
+            target_idCL_dict[idCL].append(1 - proportion)
+
+        # Add background proportions in 
+        for idCL in background_idCL_parents:
+            # Take (1 - proportion_background), which will instead show proportion of signal cells
+            proportion = background_aggregate_df.loc[idCL]['proportion']
+            background_idCL_dict[idCL].append(1 - proportion)
+            
+    # Apply Benjamini Hochberg correction to all the p_values
+    q_values = multipletests(p_values, method="fdr_bh")[1]
+
+    # Combining all parts together into a pandas dataframe
+    table_dict = {'coeff': cellType_coeff,
+            'stderr': stdError, 
+            'p_val': p_values,
+            'q_val': q_values}
+    
+    entire_dict = {**table_dict, **target_idCL_dict, **background_idCL_dict}
+    final_df = pd.DataFrame(index=antibodies, data=entire_dict)
+
+    # Add a readable column at the end by doing a query to the database
+    params = _config()
+    conn = mysql.connector.connect(**params)
+    cursor = conn.cursor()
+    
+    ab_query = """SELECT antibodies.abTarget
+                FROM antibodies
+                WHERE antibodies.idAntibody = (%s);"""
+    
+    # Add cellType column of names from id
+    ab_conv = []
+    for ab in antibodies:
+        cursor.execute(ab_query, (ab,))
+        ab_name = cursor.fetchone()[0]
+        ab_conv.append(ab_name)
+    
+    final_df.insert(0, 'target', ab_conv)
+
+    # Change sort from ascending to descending (since we took -1 * coefficient)
+    final_df.sort_values('coeff', ascending=False, inplace=True)
+
+    return final_df
+
+def get_antibodies(node_fam_dict: dict,
+                   custom_background_fam_dict: dict = None, 
                    idBTO: list = None,
                    idExperiment: list = None) -> pd.DataFrame:
     """
@@ -582,22 +928,37 @@ def get_antibodies(node_fam_dict: dict,
         result_df (pd.DataFrame): formatted dataframe containing LMM results for
             each antibody
     """
-    # Collapse dict into one list of cell types
-    parents = list(node_fam_dict.keys())
-    children = [item for sublist in list(node_fam_dict.values()) for item in sublist]
-    family = list(set(parents + children))
-    
-    # Retrieve unique antibodies from idCLs
-    antibodies = get_antibodies_idCL(family, idBTO, idExperiment)
+    # Extract all nodes in family, used as our target input
+    target_parents = list(node_fam_dict.keys())
+    target_children = [item for sublist in list(node_fam_dict.values()) for item in sublist]
+    target_family = target_parents + target_children
 
-    # Run Spark job to on antibodies
-    ab_lmm_output = run_spark_query_ab_lmm(antibodies, node_fam_dict)
+    # Retrieve unique antibodies from idCLs
+    antibodies = get_antibodies_idCL(target_family, idBTO, idExperiment)
+
+    # If background idCLs are provided, call custom query
+    if custom_background_fam_dict is not None:
+        # Extract all nodes in the custom background cell types
+        background_parents = list(custom_background_fam_dict.keys())
+        background_children = [item for sublist in list(custom_background_fam_dict.values()) for item in sublist]
+        background_family = background_parents + background_children
+
+         # Run custom Spark job on antibodies
+        ab_lmm_output = run_spark_query_custom_ab_lmm(antibodies, node_fam_dict, custom_background_fam_dict)
+
+    else:
+        # Run regular Spark job on antibodies
+        ab_lmm_output = run_spark_query_ab_lmm(antibodies, node_fam_dict)
 
     if len(ab_lmm_output) == 0:
-        return ("No antibodies found. Please retry with fewer cell types or different parameters.")
-    
-    # Convert output into a readable dataframe
-    result_df = lmm_ab_list_to_df(ab_lmm_output, parents)
+        return ("No results found. Please retry with fewer cell types or different tissue and experiment parameters.")
+
+    # Likewise for final output
+    if custom_background_fam_dict is not None:
+        # Convert output into a readable dataframe
+        result_df = lmm_custom_ab_list_to_df(ab_lmm_output, target_parents, background_parents)
+    else:
+        result_df = lmm_ab_list_to_df(ab_lmm_output, target_parents) 
 
     return result_df
 
@@ -1139,18 +1500,20 @@ def lmm_cell_type_dict_to_df(lmm_results: dict) -> dict:
         idCL_dict = {}
         
         # Last row will be for background cell percentage with that idCL and antibody
-        idCL_dict["background"] = []
+        idCL_dict["expressed"] = []
 
         for idCL, table_and_proportion_tuple in idCL_lmm_result.items():
             df = table_and_proportion_tuple[0]
             proportion = table_and_proportion_tuple[1]
             
-            cellType_coeff.append(float(df.loc['cellType']['Coef.']))
+            # Taking the negative of the coefficient
+            cellType_coeff.append(-1 * float(df.loc['cellType']['Coef.']))
             stdError.append(float(df.loc['cellType']['Std.Err.']))
             p_values.append(float(df.loc['cellType']['P>|z|']))
 
-            idCL_dict["background"].append(proportion)
-            
+            # Take (1 - proportion_background), which will instead show proportion of signal cells
+            idCL_dict["expressed"].append(1 - proportion)
+
         # Apply Benjamini Hochberg correction to all the p_values
         q_values = multipletests(p_values, method="fdr_bh")[1]
 
@@ -1182,8 +1545,8 @@ def lmm_cell_type_dict_to_df(lmm_results: dict) -> dict:
         # Add column to final df
         final_df.insert(0, 'cellType', idCL_conv)
     
-        # Sort by smallest coefficient first
-        final_df.sort_values('coeff', inplace=True)
+        # Sort by biggest coefficient first
+        final_df.sort_values('coeff', ascending=False, inplace=True)
 
         # Add this dataframe matched with its antibody_id to the final dict
         final_ab_lmm_df_dict[antibody_id] = final_df
