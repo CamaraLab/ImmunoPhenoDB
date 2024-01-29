@@ -29,6 +29,7 @@ def idcls():
 @app.route('/findabs', methods=['POST'])
 def findabs():
     res_dict = request.json
+    background_idCLs = None
     idBTO_filter = None
     idExp_filter = None
 
@@ -36,14 +37,17 @@ def findabs():
 
     idCL_family_dict = res_dict['idCL']
 
+    if 'background' in res_dict_keys:
+        background_idCLs = res_dict['background']
+
     if 'idBTO' in res_dict_keys: 
         idBTO_filter = res_dict['idBTO']
     
     if 'idExp' in res_dict_keys:
         idExp_filter = res_dict['idExp']
 
-    result_df = get_antibodies(
-                               node_fam_dict=idCL_family_dict, 
+    result_df = get_antibodies(node_fam_dict=idCL_family_dict,
+                               custom_background_fam_dict=background_idCLs, 
                                idBTO=idBTO_filter, 
                                idExperiment=idExp_filter)
     
