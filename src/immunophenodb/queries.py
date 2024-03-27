@@ -83,7 +83,8 @@ def _read_antibodies(csv_file: str) -> list:
         csv_file (str): name of csv file containing antibody names
     
     Returns:
-        antibodies (list): list of antibody ids (ex: AB_XXXXXXX)
+        antibodies (list): list of tuples with ab_name and antibody ids 
+            ex: [("CD4", "AB_XXXXXXX"), ("CD5", "AB_XXXXXXX"))
     """
     antibodies = []
 
@@ -141,7 +142,10 @@ def _ab_dict(specs_csv: str) -> dict:
     ab_dict = {}
 
     for ab in antibodies:
-        ab_dict[ab[0]] = ab[1]
+        # Hard code this in for now. Removes -1 from antibodies in the spreadsheet
+        new_ab = ab[0].removesuffix("-1")
+        ab_dict[new_ab] = ab[1]
+        # ab_dict[ab[0]] = ab[1]
 
     return ab_dict
 
