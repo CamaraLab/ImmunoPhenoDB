@@ -465,13 +465,13 @@ def _connect_db_tables():
         antigen_expression
     """
     proteins_table = """CREATE TABLE IF NOT EXISTS proteins(
-                    idUniProtKB CHAR(6) NOT NULL,
+                    idUniProtKB VARCHAR(128) NOT NULL,
                     PRIMARY KEY (idUniProtKB));
                     """
 
     aliases_table = """CREATE TABLE IF NOT EXISTS aliases(
                     alias CHAR(255) NOT NULL,
-                    idUniProtKB CHAR(6) NOT NULL,
+                    idUniProtKB VARCHAR(128) NOT NULL,
                     PRIMARY KEY (alias, idUniProtKB),
                     FOREIGN KEY (idUniProtKB) REFERENCES proteins(idUniProtKB));
                     """
@@ -493,7 +493,7 @@ def _connect_db_tables():
 
     antigens_table = """CREATE TABLE IF NOT EXISTS antigens(
                     idAntibody CHAR(11) NOT NULL,
-                    idUniProtKB CHAR(6) NOT NULL,
+                    idUniProtKB VARCHAR(128) NOT NULL,
                     PRIMARY KEY (idAntibody, idUniProtKB),
                     FOREIGN KEY (idAntibody) REFERENCES antibodies(idAntibody),
                     FOREIGN KEY (idUniProtKB) REFERENCES proteins(idUniProtKB));
@@ -647,7 +647,7 @@ def _connect_db_procedures():
     insert_antibody_proc = """CREATE PROCEDURE insert_antibody(
             IN idAntibody CHAR(11),
             IN alias CHAR(255),
-            IN idUniProtKB CHAR(6),
+            IN idUniProtKB VARCHAR(128),
             IN polyclonal BOOLEAN,
             IN host VARCHAR(45),
             IN cloneID VARCHAR(45),
@@ -671,7 +671,7 @@ def _connect_db_procedures():
     delete_alias_proc = """DROP PROCEDURE IF EXISTS insert_alias;"""
     insert_alias_proc = """CREATE PROCEDURE insert_alias(
             IN alias CHAR(255),
-            IN idUniProtKB CHAR(6)
+            IN idUniProtKB VARCHAR(128)
         )
         BEGIN
             INSERT IGNORE INTO aliases(alias, idUniProtKB) VALUES (alias, idUniProtKB);
