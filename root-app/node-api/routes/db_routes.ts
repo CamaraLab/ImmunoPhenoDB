@@ -7,7 +7,10 @@ import {idCLs,
         plotCellTypes, 
         findExperiments, 
         whichAntibodies,
-        whichCellTypes} from '../controllers/db_calls.js'
+        whichCellTypes,
+        whichExperiments,
+        stveaReference,
+        convertCellType } from '../controllers/db_calls.js'
 
 
 const router : Router = express.Router()
@@ -22,6 +25,9 @@ router.post('/plotcelltypes', plotCellTypes)
 router.post('/findexperiments', findExperiments)
 router.post('/whichantibodies', whichAntibodies)
 router.post('/whichcelltypes', whichCellTypes)
+router.post('/whichexperiments', whichExperiments)
+router.post('/stveareference', stveaReference)
+router.post('/convertcelltype', convertCellType)
 
 // module.exports = router;
 export default router
