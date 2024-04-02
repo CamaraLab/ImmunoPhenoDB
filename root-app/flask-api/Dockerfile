@@ -5,10 +5,12 @@ WORKDIR /app
 # Spark dependencies
 # Default values can be overridden at build time
 # (ARGS are in lowercase to distinguish them from ENV)
-ARG spark_version="3.5.0"
+
+# Use latest spark version (3.5.1 as of 2/29/2024)
+ARG spark_version="3.5.1"
 ARG hadoop_version="3"
 ARG scala_version
-ARG spark_checksum="8883c67e0a138069e597f3e7d4edbbd5c3a565d50b28644aad02856a1ec1da7cb92b8f80454ca427118f69459ea326eaa073cf7b1a860c3b796f4b07c2101319"
+# ARG spark_checksum="8883c67e0a138069e597f3e7d4edbbd5c3a565d50b28644aad02856a1ec1da7cb92b8f80454ca427118f69459ea326eaa073cf7b1a860c3b796f4b07c2101319"
 ARG openjdk_version="17"
 
 # Install curl and ps
@@ -29,15 +31,11 @@ RUN apt-get update --yes && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Spark installation
-RUN if [ -z "${scala_version}" ]; then \
-    curl --progress-bar --location --output "spark.tgz" \
-        "https://dlcdn.apache.org/spark/spark-${APACHE_SPARK_VERSION}/spark-${APACHE_SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz"; \
-  else \
-    curl --progress-bar --location --output "spark.tgz" \
-        "https://dlcdn.apache.org/spark/spark-${APACHE_SPARK_VERSION}/spark-${APACHE_SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}-scala${scala_version}.tgz"; \
-  fi && \
-  echo "${spark_checksum} *spark.tgz" | sha512sum -c - && \
-  tar xzf "spark.tgz" -C /usr/local --owner root --group root --no-same-owner && \
+# You need to use https://archive.apache.org/dist/ website if you want to download old Spark versions
+# But it seems to be slower, that's why we use the recommended site for download
+RUN curl --progress-bar --location --output "spark.tgz" \
+        "https://dlcdn.apache.org/spark/spark-${APACHE_SPARK_VERSION}/spark-${APACHE_SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz" && \
+  tar -xf "spark.tgz" -C /usr/local --owner root --group root --no-same-owner && \
   rm "spark.tgz"
 
 # Configure Spark
@@ -51,9 +49,14 @@ RUN if [ -z "${scala_version}" ]; then \
     ln -s "spark-${APACHE_SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}-scala${scala_version}" "${SPARK_HOME}"; \
   fi 
 
+# Not needed, we're not making a jupyter notebook
+# Add a link in the before_notebook hook in order to source automatically PYTHONPATH && \
+#   ln -s "${SPARK_HOME}/sbin/spark-config.sh" /usr/local/bin/before-notebook.d/10spark-config.sh
+
 ADD requirements.txt /app
 RUN pip3 install -r requirements.txt
 ADD . /app
 EXPOSE 5000
-
+# RUN chmod +x ./entrypoint.sh 
+# ENTRYPOINT ["sh", "entrypoint.sh"]
 CMD ["gunicorn", "--conf", "/app/gunicorn_config.py", "--bind", "0.0.0.0:5000", "app.wsgi:app"]
