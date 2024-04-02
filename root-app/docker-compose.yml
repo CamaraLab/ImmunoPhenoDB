@@ -15,6 +15,12 @@ services:
     flask:
         restart: always
         build:
-          context: ./flask-api
+            context: ./flask-api
         ports:
             - "5000:5000"
+    redis:
+        restart: always
+        build:
+            context: ./redis
+        ports:
+            - "6379:6379"
