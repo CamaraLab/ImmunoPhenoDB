@@ -17,7 +17,9 @@ from .engine import (
     get_experiments,
     which_antibodies,
     which_celltypes,
+    which_experiments,
     get_tissues,
+    downsample_reference_table
 )
 
 @app.route('/idcls', methods=['GET'])
@@ -170,12 +172,48 @@ def whichcelltypes():
     else:
         result_json = result_df.to_json()
         return result_json
+    
+@app.route("/whichexperiments", methods=['POST'])
+def whichexperiments():
+    res_dict = request.json
+    search_query = res_dict['search_query']
+
+    result_df = which_experiments(search_query=search_query)
+    # If no experiments from that search query
+    if isinstance(result_df, str):
+        return result_df
+    else:
+        result_json = result_df.to_json()
+        return result_json
 
 @app.route('/tissues', methods=['GET'])
 def findtissues():
     tissues = get_tissues()
     tissues_json = tissues.to_json()
     return tissues_json
+
+@app.route('/stveareference', methods=['POST'])
+def stveareference():
+    res_dict = request.json
+    print("stveareferernce dict:\n", res_dict)
+    antibody_pairs = res_dict["antibody_pairs"]
+    idBTO = res_dict["idBTO"]
+    idExperiment = res_dict["idExperiment"]
+    parse_option = res_dict["parse_option"]
+    pairwise_threshold = res_dict["pairwise_threshold"]
+    na_threshold = res_dict["na_threshold"]
+    population_size = res_dict["population_size"]
+
+    result_df = downsample_reference_table(antibody_pairs=antibody_pairs, 
+                                           idBTO=idBTO,
+                                           idExperiment=idExperiment,
+                                           parse_option=parse_option,
+                                           pairwise_threshold=pairwise_threshold,
+                                           na_threshold=na_threshold,
+                                           population_size=population_size)
+    result_json = result_df.to_json()
+
+    return result_json
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000)
