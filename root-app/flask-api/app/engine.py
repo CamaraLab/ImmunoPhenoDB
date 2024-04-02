@@ -20,10 +20,17 @@ from pyspark.sql import SparkSession
 from pyspark import SparkContext
 import pymysql
 
+# For STvEA
+import networkx as nx
+import numpy as np
+from random import sample
+import math
+
 SCI_CRUNCH_BASE = "http://www.scicrunch.org"
 SCI_RRID_ENDPOINT = "/resolver/"
 SCI_FILE = ".json"
-
+UNIPROT_BASE = "https://rest.uniprot.org"
+UNIPROT_ENDPOINT = "/uniprotkb/search"
 EBI_BASE = "https://www.ebi.ac.uk/ols/api/search"
 
 def _config(filename: str = '/app/config/config.ini', 
@@ -2016,3 +2023,1044 @@ def which_celltypes(search_query:str) -> pd.DataFrame:
         conn.close()
 
     return final_df
+
+#------------------------ Functions for which_experiments ------------------------#
+def which_experiments(search_query: str):
+    """
+    Performs a partial-match search query in a database to find
+    the most relevant experiments based on user input
+    
+    Parameters:
+        search_query (str): a phrase or word containing the desired 
+            experiment
+    
+    Returns:
+        final_df (pd.DataFrame): dataframe containing best matching 
+            results for the provided query 
+    """
+    warnings.filterwarnings('ignore')
+    
+    params = _config()
+    conn = mysql.connector.connect(**params)
+
+    exp_query = """SELECT e.idExperiment, e.nameExp, e.typeExp, e.pmid, e.doi, e.idBTO, t.tissueName
+            FROM experiments e
+            INNER JOIN tissues t ON e.idBTO = t.idBTO
+            WHERE LOWER(CONCAT_WS(' ', e.idExperiment, e.nameExp, e.typeExp, e.pmid, e.doi, e.idBTO, t.tissueName)) LIKE CONCAT('%%', %s, '%%')
+            ORDER BY e.idExperiment ASC"""
+    
+    parameters = [search_query]
+    exp_df = pd.read_sql(sql=exp_query, params=parameters, con=conn)
+    exp_df.rename(columns={"tissueName": "tissue"}, inplace=True)
+
+    if len(exp_df.index) == 0:
+        return ("No experiments matching that search query were found in the database.")
+
+    return exp_df
+
+#------------------------ Functions for querying reference data for STvEA ------------------------#
+def _findkeys(node: list, kv: str) -> iter:
+    """
+    Recursively find all instances of a key in a nested JSON file
+
+    Parameters:
+        node (list/dict): root node (key) in JSON file or dictionary
+        kv (str): search term for key
+
+    Return:
+        x (iterator): all key-value results
+    """
+    if isinstance(node, list):
+        for i in node:
+            for x in _findkeys(i, kv):
+                yield x
+    elif isinstance(node, dict):
+        if kv in node:
+            yield node[kv]
+        for j in node.values():
+            for x in _findkeys(j, kv):
+                yield x
+
+def _uniprot_pair_matching(sci_crunch_alias: str = None, 
+                           user_uniprotID: str = None) -> tuple:
+    """
+    Retrieves information about an antibody using UniProt's API
+
+    Parameters:
+        sci_crunch_alias (str): antibody alias returned from SciCrunch API
+        uniprotID (str): user-provided UniProtID for manual entry
+
+    Returns:
+        uniprotID, otherAliases (tuple [str, list]): antibody alias
+            and aliases retrieved from UniProt
+    """
+
+    otherAliases = []
+
+    # Removed homo sapiens organism id filter from all api queries
+                
+    # Protein and gene search (strictest level)
+    protein_gene_params = {
+        'query':  f'protein_name:{sci_crunch_alias} AND gene_exact:{sci_crunch_alias} AND reviewed:true',
+        'fields': 'gene_primary, gene_synonym, protein_name',
+        'format': 'json'
+    }
+
+    # Protein search query params
+    protein_params = {
+        'query':  f'protein_name:{sci_crunch_alias} AND reviewed:true',
+        'fields': 'gene_primary, gene_synonym, protein_name',
+        'format': 'json'
+    }
+
+    # Gene search query params if protein query fails (response != 200 or no results)
+    gene_params = {
+        'query':  f'gene_exact:{sci_crunch_alias}  AND reviewed:true',
+        'fields': 'gene_primary, gene_synonym, protein_name',
+        'format': 'json'
+    }
+
+    # Direct UniProtID accession search query params if user provided UniProtID
+    accession_params = {
+        'query':  f'accession:{user_uniprotID}',
+        'fields': 'gene_primary, gene_synonym, protein_name',
+        'format': 'json'
+    }
+
+    # Searching for UniProtID using SciCrunch alias if not user provided
+    if sci_crunch_alias is not None and user_uniprotID is None:
+        # Strictest level search
+        protein_gene_response = requests.get(UNIPROT_BASE + UNIPROT_ENDPOINT, params=protein_gene_params)
+        protein_gene_JSON = protein_gene_response.json()
+        
+        if protein_gene_response.status_code == 200 and len(protein_gene_JSON['results']) != 0:
+            resJSON = protein_gene_JSON
+        else:
+            # Protein only search
+            protein_response = requests.get(UNIPROT_BASE + UNIPROT_ENDPOINT, params=protein_params)
+            protein_JSON = protein_response.json()
+
+            if protein_response.status_code == 200 and len(protein_JSON['results']) != 0:
+                resJSON = protein_JSON
+            else:
+                # Gene only search
+                gene_response = requests.get(UNIPROT_BASE + UNIPROT_ENDPOINT, params=gene_params)
+                gene_JSON = gene_response.json()
+                resJSON = gene_JSON
+
+    # Searching for UniProtID if accession ID is user provided
+    elif sci_crunch_alias is None and user_uniprotID is not None:
+        accession_response = requests.get(UNIPROT_BASE + UNIPROT_ENDPOINT, params=accession_params)
+        resJSON = accession_response.json()
+        
+    # Retrieve Uniprot ID using SciCrunch alias (required)
+    try:
+        uniprotID = resJSON['results'][0]['primaryAccession']
+    except:
+        raise Exception(f"Unable to find UniProtID for: {sci_crunch_alias}")
+
+    # Retrieve recommended protein name (required)
+    try:
+        recommendedName = (resJSON['results'][0]
+                            ['proteinDescription']
+                            ['recommendedName']
+                            ['fullName']
+                            ['value'])
+        otherAliases.append(recommendedName)
+    except:
+        raise Exception(f"Unable to find UniProt recommended name for: {sci_crunch_alias}")
+    
+    # Retrieve alternative protein names (optional)
+    try:
+        alternativeNamesDicts = (resJSON['results'][0]
+                            ['proteinDescription']
+                            ['alternativeNames'])
+        alternativeNames = list(_findkeys(alternativeNamesDicts, 'value'))
+        otherAliases.extend(alternativeNames)
+    except:
+        pass
+
+    # Retrieve CD antigen names (optional)
+    try:
+        # CD Antigen names
+        antigenNamesDicts = (resJSON['results'][0]
+                            ['proteinDescription']
+                            ['cdAntigenNames'])
+        antigenNames = list(_findkeys(antigenNamesDicts, 'value'))
+        otherAliases.extend(antigenNames)
+    except:
+        pass
+
+    # Retrieve gene names (optional)
+    try:
+        # Gene names
+        geneName = (resJSON['results'][0]
+                            ['genes'][0]
+                            ['geneName']
+                            ['value'])
+        otherAliases.append(geneName)
+    except:
+        pass
+
+    # Retrieve gene name synonyms (optional)
+    try:
+        geneSynonymsDict = (resJSON['results'][0]
+                            ['genes'][0]
+                            ['synonyms'])
+        geneSynynoms = list(_findkeys(geneSynonymsDict, 'value'))
+        otherAliases.extend(geneSynynoms)      
+    except:
+        pass
+
+    return uniprotID, otherAliases
+
+def _sci_crunch_hits(ab_id: str) -> bool:
+    """
+    Retrieves information about an antibody using SciCrunch's API
+
+    Parameters:
+        ab_id (str): antibody id from The Antibody Registry
+    
+    Returns:
+        response (json): JSON result if successful response
+        false (bool): False if error with response
+    """
+    response = requests.get(SCI_CRUNCH_BASE + SCI_RRID_ENDPOINT + ab_id + SCI_FILE)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        return False
+
+def _sci_uni_pair_matching(ab_id_pair: list, 
+             user_uniprotID: str = None) -> list:
+    """
+    Retrieves information from SciCrunch and UniProt for an antibody
+
+    Parameters:
+        ab_id_pair (list[str, str]): antibody name and id ('CD90', 'AB_123')
+        user_uniprotID (str): UniProt accession ID (optional, for manual entry)
+
+    Returns:
+        each_hit_results (list): information gathered using SciCrunch and UniProt
+            for an antibody.
+            Example: [(alias, polyclonal, host, uniprotID, otherAliases), ...]
+    """
+    errors = []
+
+    each_hit_results = []
+
+    csv_alias = ab_id_pair[0]
+    csv_ab_id = ab_id_pair[1]
+
+    ### SciCrunch ###
+    sciJSON = _sci_crunch_hits(csv_ab_id)
+
+    if sciJSON != False:
+        num_hits = sciJSON['hits']['total']
+
+        for i in range(num_hits):
+            sci_alias = (sciJSON['hits']['hits'][i]
+                            ['_source']['antibodies']['primary'][0]
+                            ['targets'][0]
+                            ['name'])
+            
+            clonality = (sciJSON['hits']['hits'][i]
+                                ['_source']['antibodies']['primary'][0]
+                                ['clonality']['name'])
+            
+            if clonality != 'polyclonal':
+                clonalBool = False
+
+            cloneID = (sciJSON['hits']['hits'][i]
+                            ['_source']['antibodies']['primary'][0]
+                            ['clone']['identifier']).replace('Clone ', '')
+            
+            # If there's a cloneID for polyclonal, raise an error
+            # Reverse: If monoclonal, and it does NOT have a clone ID: then spit an error
+            if clonalBool and cloneID:
+                continue # skip this antibody hit
+
+            host = (sciJSON['hits']['hits'][i]
+                        ['_source']['organisms']['source'][0]
+                        ['species']['name'])
+
+
+            ### UniProt ###
+            try:
+                if user_uniprotID is None:
+                    uniprotID, otherAliases = _uniprot_pair_matching(sci_crunch_alias=sci_alias)
+                    each_hit_results.append((sci_alias, clonalBool, host, uniprotID, cloneID, otherAliases))
+                elif user_uniprotID is not None:
+                    uniprotID, otherAliases = _uniprot_pair_matching(user_uniprotID=user_uniprotID)
+                    each_hit_results.append((sci_alias, clonalBool, host, uniprotID, cloneID, otherAliases))
+            except Exception as e:
+                # logging.warning(f"Skipping {csv_alias}. Refer to antibody_errors.txt")
+                continue # skip this antibody hit
+                
+    if len(each_hit_results) == 0:
+        return []
+    else:
+        modified_results = each_hit_results[0]
+        cloneID = modified_results[4]
+        aliases_list = modified_results[5]
+    
+        final_results = [cloneID, aliases_list]
+        return final_results
+
+def extract_alnum_lowercase(string) -> str:
+    """
+    Extracts all numbers and letters from a string as lowercase
+
+    Parameters:
+        string (str): character input
+    
+    Returns:
+        string (str): filtered characters from string
+    """
+    return ''.join(ch for ch in string if ch.isalnum()).lower()
+
+def match_antibody(ab_name: str, ab_id: str, option: int = 1) -> list:
+    """
+    Finds the most relevant antibodies in the database given an antibody name and ID.
+    If an exact antibody is not found in the database, a matching is performed that
+    considers the clone ID and alias for that antibody to find the next best result.
+    Allows different levels of search/strictness.
+
+    Parameters:
+        ab_name (str): antibody name provided on the experiment spreadsheet
+        ab_id (str): antibody ID provided on the experiment spreadsheet
+        option (int): level of strictness when searching, where
+            1: parse by clone ID and alias (default)
+            2: parse by alias and antibody ID (most relaxed)
+            3: parse by antibody ID (strictest)
+    
+    Returns:
+        matched_antibodies (list): list of antibodies returned from the database
+            matching the provided input antibody from the experiment spreadsheet
+
+    """    
+    params = _config()
+    conn = mysql.connector.connect(**params)
+    cursor = conn.cursor()
+
+    # Do initial check: Does the antibody ID already exist in the database?
+    check_ab_exists_query = """SELECT COUNT(*)
+                            FROM antibodies 
+                            WHERE antibodies.idAntibody=(%s)"""
+
+    cursor.execute(check_ab_exists_query, (ab_id, ))
+    ab_exists_result = cursor.fetchone()[0]
+
+    # If the antibody is already in the database, we can use it
+    if ab_exists_result == 1:
+        return [ab_id]
+
+    # If the antibody isn't in the database, start trying to 
+    # match the next best result based on CloneID and aliases (default option)
+    if ab_exists_result != 1 and option == 1:
+        # Do a scicrunch_uniprot lookup to find the unknown antibody's
+        # clone ID and aliases
+        clone_aliases = _sci_uni_pair_matching([ab_name, ab_id])
+
+        # If there were no additional information found, return []
+        if len(clone_aliases) == 0:
+            return []
+        
+        cloneID = clone_aliases[0] # stored as a string
+        aliases = clone_aliases[1] # stored as a list
+        
+        # Find all rows (idAntibody) in the database that share the same clone ID
+        find_ab_similar_clone_query = """SELECT antibodies.idAntibody 
+                                      FROM antibodies
+                                      WHERE antibodies.cloneID = (%s);"""
+
+        cursor.execute(find_ab_similar_clone_query, (cloneID, ))
+        similar_abs = cursor.fetchall()
+        similar_abs_list = [ab[0] for ab in similar_abs]
+
+        # If there were more than 1 'similar' antibody based on cloneID
+        # Investigate further by checking for a matching alias between 
+        # antibody in database and the unknown antibody
+        if len(similar_abs_list) > 0:
+
+            matched_antibodies = []
+            
+            for similar_ab in similar_abs_list:
+                # Find aliases for the antibody in the database
+                aliases_query = """SELECT aliases.alias FROM antigens
+                                INNER JOIN aliases on aliases.idUniProtKB = antigens.idUniProtKB
+                                WHERE antigens.idAntibody = (%s);"""
+                cursor.execute(aliases_query, (similar_ab, ))
+                similar_aliases = cursor.fetchall()
+                similar_aliases_list = [alias[0] for alias in similar_aliases]
+
+                # Find any similar results
+                # Remove any symbols and convert all strings to lowercase
+                aliases_modified = [extract_alnum_lowercase(x) for x in aliases]
+                similar_aliases_list_modified = [extract_alnum_lowercase(x) for x in similar_aliases_list]
+                common_aliases = [i for i in aliases_modified if i in similar_aliases_list_modified]
+
+                if len(common_aliases) > 0:
+                    matched_antibodies.append(similar_ab)
+                else:
+                    continue # skip to next result
+
+            return matched_antibodies
+
+        else:
+            return [] # for now, if there were no matching clone ID, we should skip this ab
+
+    # Option 2: Search by only alias and antibody target, no clone ID
+    if ab_exists_result != 1 and option == 2:
+        # Do a scicrunch_uniprot lookup to find the unknown antibody's
+        # abTarget and aliases
+        clone_aliases = _sci_uni_pair_matching([ab_name, ab_id])
+
+        # If there were no additional information found, return []
+        if len(clone_aliases) == 0:
+            return []
+        
+        # abTarget = abTarget_aliases[0] # stored as a string
+        aliases = clone_aliases[1] # stored as a list
+
+        # Find all rows (idAntibody) in the database that share the same abTarget
+        find_ab_similar_target_query = """SELECT antibodies.idAntibody 
+                                      FROM antibodies
+                                      WHERE antibodies.abTarget = (%s);"""
+
+        cursor.execute(find_ab_similar_target_query, (ab_name, ))
+        similar_abs = cursor.fetchall()
+        similar_abs_list = [ab[0] for ab in similar_abs]
+
+        # If there were more than 1 'similar' antibody based on cloneID
+        # Investigate further by checking for a matching alias between 
+        # antibody in database and the unknown antibody
+        if len(similar_abs_list) > 0:
+            matched_antibodies = []
+            
+            for similar_ab in similar_abs_list:
+                # Find aliases for the antibody in the database
+                aliases_query = """SELECT aliases.alias FROM antigens
+                                INNER JOIN aliases on aliases.idUniProtKB = antigens.idUniProtKB
+                                WHERE antigens.idAntibody = (%s);"""
+                cursor.execute(aliases_query, (similar_ab, ))
+                similar_aliases = cursor.fetchall()
+                similar_aliases_list = [alias[0] for alias in similar_aliases]
+
+                # Find any similar results
+                # Remove any symbols and convert all strings to lowercase
+                aliases_modified = [extract_alnum_lowercase(x) for x in aliases]
+                similar_aliases_list_modified = [extract_alnum_lowercase(x) for x in similar_aliases_list]
+                common_aliases = [i for i in aliases_modified if i in similar_aliases_list_modified]
+
+                if len(common_aliases) > 0:
+                    matched_antibodies.append(similar_ab)
+                else:
+                    continue # skip to next result
+
+            return matched_antibodies
+
+        else:
+            return [] # for now, if there were no matching clone ID, we should skip this ab
+
+    # Option 3: strict search by antibody ID only in the database
+    if ab_exists_result != 1 and option == 3:
+        check_ab_exists_query = """SELECT COUNT(*)
+                            FROM antibodies 
+                            WHERE antibodies.idAntibody=(%s)"""
+
+        cursor.execute(check_ab_exists_query, (ab_id, ))
+        ab_exists_result = cursor.fetchone()[0]
+
+        if ab_exists_result == 1:
+            return [ab_id]
+        else:
+            return []
+        
+def parse_antibodies(antibody_pairs: list, option = 1) -> dict:
+    """
+    Parses each antibody name and ID in the experiment spreadsheet to 
+    find matching antibodies in the database.
+
+    Parameters:
+        antibody_pairs (list): list containing: [antibody_name, antibody_id]
+        option (int): degree of strictness for matching
+    
+    Returns:
+        database_to_original_ab_dict (dict): dictionary containing IDs where:
+            key: antibody ID from database, value: original antibody ID
+    """
+    antibodies_to_query = []
+    database_to_original_ab_dict = {} # keys: ab retrieved from db, value: original antibody from dataset
+    
+    for antibody_and_id in antibody_pairs:
+        result = match_antibody(antibody_and_id[0], antibody_and_id[1], option=option)
+        if len(result) > 0: # If multiple antibodies due to matching, take first hit
+            antibodies_to_query.append(result[0])
+            database_to_original_ab_dict[result[0]] = antibody_and_id[1]
+        else:
+            continue
+
+    return database_to_original_ab_dict
+
+def drop_antibodies(truth_table: pd.DataFrame) -> pd.DataFrame:
+    """
+    Removes columns (antibodies) from a table that contains all 0s. This table contains
+    boolean integers (0 = false, 1 = true) where rows = experiment ID and columns = antibody ID.
+    If an antibody is not used in all experiments, it is dropped/removed from the table.
+
+    Parameters:
+        truth_table (pd.DataFrame): table containing a 0 or 1 depending on expression
+            of a given antibody in an experiment
+        
+    Returns:
+        truth_final (pd.DataFrame): table containing only antibodies that are used
+            in at least one experiment
+    """
+    columns_to_exclude = ['idExperiment']
+    temp_columns = truth_table["idExperiment"]
+    temp_truth = truth_table.loc[:, ~truth_table.columns.isin(columns_to_exclude)]
+
+    # Remove any multi index
+    truth_table.columns.name = None
+
+    # Perform first antibody drop here, for all columns with entire values set to 0
+    # Check if all values in each column are 0
+    zero_columns = (temp_truth == 0).all()
+    
+    # Get the column names where all values are 0
+    columns_to_drop = zero_columns[zero_columns].index
+    columns_to_drop
+    
+    # # Drop the columns with all 0s
+    truth_final = temp_truth.drop(columns=columns_to_drop)
+
+    # Restore the rest of the non-antibody columns
+    truth_final.insert(0, 'idExperiment', temp_columns)
+    
+    return truth_final
+
+def find_exp_truth_table(antibodies: list,
+                         idBTO: list = None,
+                         idExperiment: list = None) -> pd.DataFrame:
+    """
+    Given a list of antibodies, find where each antibody is used in all the
+    experiments in the database. Optionally filter by a specific tissue type
+    or particular experiments.
+
+    Parameters:
+        antibodies (list): list of antibody IDs
+        idBTO (list): list of tissue IDs to filter (optional)
+        idExperiment (list): list of experiment IDs to filter (optional)
+    
+    Returns:    
+        exp_table (pd.DataFrame): table where rows = experiment IDs and 
+            columns = antibody IDs. Value of each cell can be 0 or 1, where
+            0 indicates that the antibody is not used in that experiment and
+            1 indicates that the antibody is used in the experiment
+    """
+    
+    warnings.filterwarnings('ignore')
+    params = _config()
+    conn = mysql.connector.connect(**params)
+    cursor = conn.cursor()
+
+    # No additional filtering
+    if antibodies is not None and idBTO is None and idExperiment is None:
+        ab_placeholders = ','.join(['%s'] * len(antibodies))
+                       
+        ab_query = """SELECT DISTINCT (antibodies.idAntibody), antibodies.abTarget, experiments.idExperiment
+            FROM cells
+            INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+            INNER JOIN tissues on experiments.idBTO = tissues.idBTO
+            INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+            INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+            WHERE antibodies.idAntibody IN (%s);""" % (ab_placeholders)
+    
+        parameters = antibodies.copy()
+        
+        # Raw data from database 
+        # where each row: [idAntibody, abTarget, idExperiment]
+        
+        exp_table = pd.read_sql(sql=ab_query, params=parameters, con=conn)
+                             
+     # Filter only by experiment ID
+    elif antibodies is not None and idBTO is None and idExperiment is not None:
+        ab_placeholders = ','.join(['%s'] * len(antibodies))
+        idExperiment_placeholders = ','.join(['%s'] * len(idExperiment))
+                       
+        ab_idExp_query = """SELECT DISTINCT (antibodies.idAntibody), antibodies.abTarget, experiments.idExperiment
+            FROM cells
+            INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+            INNER JOIN tissues on experiments.idBTO = tissues.idBTO
+            INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+            INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+            WHERE antibodies.idAntibody IN (%s) AND
+             experiments.idExperiment IN (%s);""" % (ab_placeholders,  idExperiment_placeholders)
+    
+        parameters = antibodies.copy()
+        parameters.extend(idExperiment)
+    
+        exp_table = pd.read_sql(sql=ab_idExp_query, params=parameters, con=conn)
+
+    # Filter only by tissue ID
+    elif antibodies is not None and idBTO is not None and idExperiment is None:
+        ab_placeholders = ','.join(['%s'] * len(antibodies))
+        idBTO_placeholders = ','.join(['%s'] * len(idBTO))
+                       
+        ab_idBTO_query = """SELECT DISTINCT (antibodies.idAntibody), antibodies.abTarget, experiments.idExperiment
+            FROM cells
+            INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+            INNER JOIN tissues on experiments.idBTO = tissues.idBTO
+            INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+            INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+            WHERE antibodies.idAntibody IN (%s) AND
+             experiments.idBTO IN (%s);""" % (ab_placeholders, idBTO_placeholders)
+    
+        parameters = antibodies.copy()
+        parameters.extend(idBTO)
+        
+        exp_table = pd.read_sql(sql=ab_idBTO_query, params=parameters, con=conn)
+
+    # Filter by both tissue and experiment
+    elif antibodies is not None and idBTO is not None and idExperiment is not None:
+        ab_placeholders = ','.join(['%s'] * len(antibodies))
+        idBTO_placeholders = ','.join(['%s'] * len(idBTO))
+        idExperiment_placeholders = ','.join(['%s'] * len(idExperiment))
+                       
+        ab_idBTO_idExp_query = """SELECT DISTINCT (antibodies.idAntibody), antibodies.abTarget, experiments.idExperiment
+            FROM cells
+            INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+            INNER JOIN tissues on experiments.idBTO = tissues.idBTO
+            INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+            INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+            WHERE antibodies.idAntibody IN (%s) AND
+             experiments.idBTO IN (%s) AND 
+             experiments.idExperiment IN (%s);""" % (ab_placeholders, idBTO_placeholders, idExperiment_placeholders)
+    
+        parameters = antibodies.copy()
+        parameters.extend(idBTO)
+        parameters.extend(idExperiment)
+
+        exp_table = pd.read_sql(sql=ab_idBTO_idExp_query, params=parameters, con=conn)
+        
+    # Format table into rows: experiments, columns: antibodies, cell value: abTarget
+    exp_pivot = exp_table.pivot_table(index='idExperiment', columns='idAntibody', 
+                                      values='abTarget', aggfunc='first')
+
+    # Create truth table, where 0: not expressed, 1: expressed (IOW: there's an abTarget present)
+    truth_table = (~exp_pivot.isna()).astype(int)
+
+    # Remove any multi index
+    truth_table.columns.name = None
+                             
+    # Move idExperiment into a column, and reset the index so it starts counting at 0, 1, 2...
+    # Reason being that the experiment IDs will not always be in a sequence
+    # Index will have to be matched back up to the value in column 'idExperiment'
+    
+    pivot_table_reset = truth_table.reset_index()
+    pivot_table_reset.index = range(len(pivot_table_reset))         
+
+    # table is ready for pairwise calculations
+    return pivot_table_reset
+
+def pairwise_distance_matrix(exp_ab_truth_table: pd.DataFrame) -> pd.DataFrame:
+    """
+    Given the experiment and antibody truth table (0s and 1s), calculate a 
+    pairwise distance metric used to measure the number of antibodies
+    associated to a particular experiment 
+
+    Parameters:
+        exp_ab_truth_table (pd.DataFrame): experiment and antibody
+            truth table for which antibodies are expressed in each experiment
+
+    Returns:
+        distance_matrix (pd.DataFrame): pairwise distance matrix for
+            every experiment and antibody
+    """
+    num_exp = len(exp_ab_truth_table.index)
+    num_ab = len(exp_ab_truth_table.columns) - 1 # disregard idExperiment
+    
+    distance_matrix = np.zeros([num_exp, num_exp])
+
+    for i in range(0, num_exp): ## need to start at 1 due to exp ID
+        for j in range(i + 1, num_exp):
+            ab_a = list(exp_ab_truth_table.loc[i, exp_ab_truth_table.columns != 'idExperiment'])
+            ab_b = list(exp_ab_truth_table.loc[j, exp_ab_truth_table.columns != 'idExperiment'])
+
+            ab_bool = [x == 1 and y == 1 for x, y in zip(ab_a, ab_b)]
+            ab_pair_bool = list(np.where(ab_bool)[0]) # find number of pairs of exp that have info about an antibody
+            num_exp_with_info_about_ab = len(ab_pair_bool)
+            
+            # Calculate Distance Metric
+            metric = (num_ab - num_exp_with_info_about_ab) / (num_ab)
+                
+            # Add to distance matrix
+            distance_matrix[i][j] = metric
+            distance_matrix[j][i] = metric
+            
+    # Matrix is ready to be converted into adjacency matrix
+    return distance_matrix
+
+def pairwise_adjacency_matrix(pairwise_distance_matrix: pd.DataFrame,
+                              filter: float = 1) -> pd.DataFrame:
+    """
+    Applies a filter to the pairwise distance matrix and returns a 
+    boolean (0 = False, 1 = True) for each value. The resulting boolean
+    matrix is used as an adjacency matrix for a graph representing 
+    the relationship between each experiment (node). 
+
+    Parameters:
+        pairwise_distance_matrix (pd.DataFrame): pairwise distance 
+            matrix for every experiment and antibody
+        filter (float): threshold to decide whether a pairwise distance
+            can be used to account for a given experiment
+    
+    Returns:
+        adjacency_matrix (pd.DataFrame): adjacency matrix consisting of
+            0s and 1s after filtering by a threshold.
+    """
+    # Create a boolean mask for values under a threshold
+    # We will only consider pairs that fall under this threshold
+    filtered_bool_mask = pd.DataFrame(pairwise_distance_matrix) < filter
+
+    # Create adjacency matrix where 0 = false, 1 = true
+    adjacency_matrix = filtered_bool_mask.astype(int)
+    return adjacency_matrix
+
+def find_giant_component(adjacency_matrix: pd.DataFrame) -> list:
+    """
+    Finds the giant component in a graph of nodes representing
+    experiment IDs. This component contains the experiments that will be
+    considered when querying for the reference dataset. The purpose of this
+    giant component is to reduce the chance of querying data from experiments
+    that have no expression of an antibody of interest. 
+
+    Parameters:
+        adjacency_matrix (pd.DataFrame): matrix containing 0s and 1s
+            used to create a graph representing experiments
+    
+    Returns:
+        G0.nodes (list): list of nodes (experiments) in giant component
+    """
+    # Create a graph using matrix
+    G = nx.from_pandas_adjacency(adjacency_matrix)
+
+    # Find giant component
+    gcc = sorted(nx.connected_components(G), key=len, reverse=True)
+    G0 = G.subgraph(gcc[0])
+
+    # Find nodes of G0 (these will be the index values of the original truth table)
+    return list(G0.nodes)
+
+def filter_exp_truth_table(initial_truth_table: pd.DataFrame, 
+                           giant_component_nodes_index: list) -> pd.DataFrame:
+    """
+    Remove rows (experiments) from original truth table that were not in
+    the giant component.
+
+    Parameters:
+        initial_truth_table (pd.DataFrame): initial truth table with
+            rows = experiments and columns = antibodies
+        giant_component_nodes_index (list): list of nodes in giant component
+    
+    Returns:
+        filtered_table (pd.DataFrame): truth table with only experiments found
+            in the giant component
+    """
+    # Filter out rows (experiments) from original truth table
+    filtered_table = initial_truth_table[initial_truth_table.index.isin(giant_component_nodes_index)]
+    return filtered_table
+
+def entire_reference_table(antibodies: list, 
+                           idExperiment: list) -> pd.DataFrame:
+    """
+    Queries the database to retrieve reference CITE-Seq data based on
+    the provided antibodies and experiments. 
+
+    Parameters:
+        antibodies (list): list of antibodies to query for
+        idExperiment (list): list of experiments to query for
+    
+    Returns:
+        ref_df (pd.DataFrame): unformatted table containing normalized
+        protein counts for all applicable antibodies and experiment IDs
+    """
+    warnings.filterwarnings('ignore')
+    params = _config()
+    conn = mysql.connector.connect(**params)
+    cursor = conn.cursor()
+    
+    ab_placeholders = ','.join(['%s'] * len(antibodies))
+    idExperiment_placeholders = ','.join(['%s'] * len(idExperiment))
+    
+    ab_idExperiment_query = """SELECT cells.idCell, antigen_expression.normValue, 
+            antibodies.abTarget, antibodies.idAntibody, cells.idCL, experiments.idExperiment
+            FROM cells
+            INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+            INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+            INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+            WHERE antibodies.idAntibody IN (%s)
+                AND cells.idExperiment IN (%s);""" % (ab_placeholders, idExperiment_placeholders)
+
+    parameters = antibodies.copy()
+    parameters.extend(idExperiment)
+
+    ref_df = pd.read_sql(sql=ab_idExperiment_query, params=parameters, con=conn)
+    
+    if ref_df is None or len(ref_df.index) == 0:
+        return ("No reference data matching these parameters was found")
+         
+    return ref_df
+
+def format_reference_table(entire_reference_table: pd.DataFrame, 
+                           na_threshold: float = 1) -> pd.DataFrame:
+    """
+    Takes in unformatted table from database and converts to 
+    CITE-Seq format (cells x antibodies), with added "idCL" column
+    for the cell type of a particular cell (row). 
+
+    Additional filtering can be applied based on the number of 
+    missing values (NA) for a given row (cell).
+
+    Parameters:
+        entire_reference_table (pd.DataFrame): unformatted table
+            containing all normalized protein values for each antibody
+        na_threshold (float): percentage of NAs needed to filter
+            out a row from the entire reference table
+
+    Returns:
+        filtered_df (pd.DataFrame): formatted reference table where
+            rows = cells and columns = antibodies. The final column
+            is "idCL", which represents the cell type of the cell.
+    """
+
+    antibodies = list(set(entire_reference_table['idAntibody'])) # don't use abTarget here!
+
+    # Pivot the DataFrame with idCellOriginal as index
+    pivot_df = entire_reference_table.pivot_table(index=['idCell', 'idCL', 'idExperiment'],
+                              columns='idAntibody', # don't use abTarget here!
+                              values='normValue',
+                              aggfunc='first').reset_index()
+    
+    # Set idCellOriginal as the index
+    pivot_df.set_index('idCell', inplace=True)
+    
+    # Reorder columns, moving 'idCL' to the end
+    df_columns = antibodies.copy()
+
+    # Remove any multilevel index
+    pivot_df.columns.name = None
+    
+    df_columns.append('idCL')
+    df_columns.append('idExperiment')
+    
+    pivot_df = pivot_df[df_columns]
+    
+    # Set the threshold for NaNs (90%)
+    threshold_percentage = na_threshold
+    
+    # Calculate the percentage of NaNs in specified columns for each row
+    nan_percentage = pivot_df[antibodies].isna().sum(axis=1) / len(antibodies)
+    
+    # Filter rows based on the threshold
+    # Filters out cells that have more than %threshold of NaN's in their column values
+    filtered_df = pivot_df[nan_percentage < threshold_percentage]
+    
+    return filtered_df
+
+def downsample(entire_reference_table: pd.DataFrame, 
+               size: int = 50) -> pd.DataFrame:
+    """
+    Downsamples the large reference table to 10,000 rows (cells). 
+    Performs downsampling in a controlled randomized order, where
+    proportions of each cell type in the original table are 
+    kept in the downsampled table. 
+
+    Parameters:
+        entire_reference_table (pd.DataFrame): original large table
+            containing all cells for the given antibodies
+        size (int): the minimum number of cells needed to define 
+            a cell type population
+    
+    Returns:
+        entire_reference_table (pd.DataFrame): downsampled 
+            reference table
+    """
+
+    total_num_cells = len(entire_reference_table.index)
+    
+    # Downsample if number of rows exceeds 10,000
+    if total_num_cells <= 10000:
+        return entire_reference_table
+    else:
+        cells_to_keep = []
+        combined_dfs = []
+        
+        # Find all unique idCLs in the table
+        unique_idCLs = list(set(entire_reference_table['idCL']))
+
+        # For each idCL, calculate the number of cells present
+        for idCL in unique_idCLs:
+            idCL_cells = entire_reference_table.loc[entire_reference_table['idCL'] == idCL]
+
+            # Find number of cells for this cell type
+            list_of_cells = list(idCL_cells.index)
+            num_idCL_cells = len(list_of_cells)
+
+            # Calculate an adjusted sample_amount for each idCL population to choose from
+            sample_amount = ((num_idCL_cells)/(total_num_cells)) * 10000
+
+            # Round up the sample amount
+            sample_amount_rounded_up = math.ceil(sample_amount)
+            
+            if sample_amount_rounded_up > size:
+                # Randomly sample this number of cells from this idCL population
+                sampled_population_index = sample(list_of_cells, sample_amount_rounded_up)
+
+                # Add these cells to cells_to_keep
+                cells_to_keep.extend(sampled_population_index)
+
+                # Create a df for just these cells in this cell type
+                temp_df = idCL_cells.loc[sampled_population_index]
+
+                # Add this to combined_dfs
+                combined_dfs.append(temp_df)
+                
+            else:
+                # If the sample amount was below our threshold, take 50 of the cells remaining
+                if num_idCL_cells > size:
+                    # Take 50 of these cells
+                    smaller_sampled_population_index = sample(list_of_cells, size)
+
+                    # Add these cells to cells_to_keep
+                    cells_to_keep.extend(smaller_sampled_population_index)
+
+                    # Create a df for just these cells in this cell type
+                    temp_df = idCL_cells.loc[smaller_sampled_population_index]
+                    
+                    # Add this to combined_dfs
+                    combined_dfs.append(temp_df)
+                    
+                # If there is not even 50 cells in the population, take whatever remains
+                else:
+                    remaining_sample_population_index = list_of_cells
+                    
+                    # Add these cells to cells_to_keep
+                    cells_to_keep.extend(remaining_sample_population_index)
+
+                    # Create a df for just these cells in this cell type
+                    temp_df = idCL_cells.loc[remaining_sample_population_index]
+                    
+                    # Add this to combined_dfs
+                    combined_dfs.append(temp_df)
+
+        if len(cells_to_keep) > 10000:
+            reduced_cells_to_keep = sample(cells_to_keep, 10000)
+            return entire_reference_table.loc[pd.Index(reduced_cells_to_keep)]
+        else:
+            return entire_reference_table.loc[pd.Index(cells_to_keep)]
+        
+def remove_all_zeros_or_na(protein_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Removes any rows (cells) or columns (antibodies) that are all 0s or NAs
+
+    Parameters:
+        protein_df (pd.DataFrame): table containing protein count data
+
+    Returns:
+        filtered_df (pd.DataFrame): filtered table after removing
+            any rows/columns with all 0s or NAs
+    """
+    # Check if any row in the DataFrame has all NAs or all zeros
+    rows_to_exclude = protein_df.apply(lambda row: all(row.isna() | (row == 0)), axis=1)
+    
+    # Filter out rows to keep only those that do not meet the exclusion conditions
+    filtered_df_rows = protein_df[~rows_to_exclude]
+
+    # Check if any column in the DataFrame has all NAs or all zeros
+    columns_to_exclude = filtered_df_rows.apply(lambda col: all(col.isna() | (col == 0)), axis=0)
+    
+    # Filter out columns to keep only those that do not meet the exclusion conditions
+    filtered_df = filtered_df_rows.loc[:, ~columns_to_exclude]
+
+    # Display the modified DataFrame
+    return filtered_df
+
+def downsample_reference_table(antibody_pairs: list,
+                               idBTO: list = None,
+                               idExperiment: list = None,
+                               parse_option = 1,
+                               pairwise_threshold: float = 1.0,
+                               na_threshold: float = 1.0,
+                               population_size: int = 50) -> pd.DataFrame:
+    """
+    Wrapper function for generating an appropriate reference CITE-Seq dataset
+    used for STvEA annotation transfer
+
+    Parameters:
+        antibody_pairs (list): list of pairs, where a pair is:
+            [ ["CD3e", "AB_2800722"], 
+              ["CD8", "AB_2814271"], 
+              ["CD56", "AB_2814309"] ... ]
+        idBTO (list): list of tissue IDs to filter for
+        idExperiment (list): list of experiment IDs to filter for
+        parse_option (int): level of strictness when searching for
+            antibodies in the database from an experiment spreadsheet
+        pairwise_threshold (float): threshold to decide whether a pairwise distance
+            can be used to account for a given experiment
+        na_threshold (float): percentage of NAs needed to filter
+            out a row from the entire reference table
+        population_size (int): the minimum number of cells needed to define 
+            a cell type population
+
+    Returns:
+        clean_downsampled_df (pd.DataFrame): formatted and downsampled
+            reference CITE-Seq dataset where rows = cells, columns = antibodies
+    """
+    
+    # Create antibody dictionary
+    antibodies_dict = parse_antibodies(antibody_pairs, option = parse_option) 
+
+    antibodies = list(antibodies_dict.keys())
+                                   
+    # Find truth table for all experiments and antibodies
+    initial_tb = find_exp_truth_table(antibodies=antibodies, idBTO=idBTO, idExperiment=idExperiment)
+               
+    # Drop all columns (antibodies) that only contain 0s (false)
+    first_ab_drop = drop_antibodies(initial_tb)
+
+    # Calculate pairwise distances between idExperiment and remaining antibodies
+    pairwise_dist = pairwise_distance_matrix(first_ab_drop)
+                                   
+    # Create an adjacency matrix based on filtered pairwise dist values
+    adj_matrix = pairwise_adjacency_matrix(pairwise_dist, pairwise_threshold)
+                                   
+    # Create graph and find the giant component's nodes. These nodes values correspond
+    # to the index values found in first_ab_drop
+    gc_nodes_index = find_giant_component(adj_matrix)
+
+    # Filter out experiments from first_ab_drop that were not in the giant component
+    final_tb = filter_exp_truth_table(first_ab_drop, gc_nodes_index)
+
+    # Drop all columns again (antibodies) that only contain 0s (false)
+    second_ab_drop = drop_antibodies(final_tb)
+
+    # Use the remaining antibodies and experiments to query for cells in the database
+    antibodies_to_query = [ab for ab in second_ab_drop.columns if ab != "idExperiment"] 
+    experiments_to_query = list(second_ab_drop["idExperiment"])
+                                   
+    big_table = entire_reference_table(antibodies_to_query, experiments_to_query)
+
+    # Convert big_table into CITE-SEQ format (cells x antibodies)
+    # Last 2 columns: idCL, idExperiment
+    format_df = format_reference_table(big_table, na_threshold=na_threshold)
+    renamed_format_df = format_df.rename(columns=antibodies_dict, inplace=False)
+                                   
+    # Downsample to 10k cells
+    downsampled_df = downsample(renamed_format_df, size=population_size)
+
+    # Remove any rows or columns that are all 0s or NAs
+    clean_downsampled_df = remove_all_zeros_or_na(downsampled_df)
+    
+    return clean_downsampled_df
