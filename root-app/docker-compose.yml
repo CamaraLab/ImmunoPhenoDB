@@ -6,6 +6,8 @@ services:
             context: ./node-api
         ports:
             - "8080:8080"
+        depends_on:
+            - redis
     nginx:
         restart: always
         build:
