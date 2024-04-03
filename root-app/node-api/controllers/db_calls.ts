@@ -17,13 +17,46 @@ declare module "express-serve-static-core" {
     }
 }
 
-const client: ReturnType<typeof createClient> = createClient({
-    url: 'redis://redis:6379' 
-});
-client.on('error', err => console.log('Redis Client Error', err));
-console.log("trying to connect to redis...")
-client.connect();
-console.log("redis connected")
+let client: any;
+
+function connectToRedis(): void {
+  console.log('Trying to connect to Redis...');
+  client = createClient({
+    url: 'redis://redis:6379',
+  });
+
+  client.on('error', (err: Error) => {
+    console.error('Redis connection error:', err.message);
+  });
+
+  client.on('connect', () => {
+    console.log('Connected to Redis');
+  });
+
+  client.on('end', () => {
+    console.log('Connection to Redis ended');
+    retryConnect(0); // Retry connecting after a delay
+  });
+
+  client.connect();
+}
+
+function retryConnect(retryCount: number): void {
+  client?.on('ready', () => {
+    console.log('Redis connection successful');
+  });
+
+  client?.on('error', (err: Error) => {
+    console.error(`Redis connection error: `, err.message);
+    const nextRetryDelay = Math.pow(2, retryCount) * 1000; // Exponential backoff
+    setTimeout(() => retryConnect(retryCount + 1), nextRetryDelay);
+  });
+
+  // Attempt to reconnect immediately
+  connectToRedis();
+}
+
+retryConnect(0);
 
 export const idCLs = async (req: any, res: Response) => {
     try {
@@ -233,7 +266,7 @@ export const convertCellType = async (req: Request, res: Response) => {
         console.log("redis results mGetRes:", mGetRes)
   
         // Step 3: Process values from Redis
-        mGetRes.forEach((value, index) => {
+        mGetRes.forEach((value: any, index: any) => {
           if (value != null) {
             //   console.log("entered here! valid redis result")
               // Key exists in Redis, add to results
