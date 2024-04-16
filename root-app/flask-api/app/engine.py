@@ -2081,8 +2081,8 @@ def _findkeys(node: list, kv: str) -> iter:
             for x in _findkeys(j, kv):
                 yield x
 
-def _uniprot_pair_matching(sci_crunch_alias: str = None, 
-                           user_uniprotID: str = None) -> tuple:
+def _uniprot_aliases(sci_crunch_alias: str = None, 
+                     user_uniprotID: str = None) -> tuple:
     """
     Retrieves information about an antibody using UniProt's API
 
@@ -2092,7 +2092,7 @@ def _uniprot_pair_matching(sci_crunch_alias: str = None,
 
     Returns:
         uniprotID, otherAliases (tuple [str, list]): antibody alias
-            and aliases retrieved from UniProt
+            and aliases retrieved from UniProt, or an empty list for no results
     """
 
     otherAliases = []
@@ -2115,7 +2115,7 @@ def _uniprot_pair_matching(sci_crunch_alias: str = None,
 
     # Gene search query params if protein query fails (response != 200 or no results)
     gene_params = {
-        'query':  f'gene_exact:{sci_crunch_alias}  AND reviewed:true',
+        'query':  f'gene_exact:{sci_crunch_alias} AND reviewed:true',
         'fields': 'gene_primary, gene_synonym, protein_name',
         'format': 'json'
     }
@@ -2155,10 +2155,13 @@ def _uniprot_pair_matching(sci_crunch_alias: str = None,
         
     # Retrieve Uniprot ID using SciCrunch alias (required)
     try:
+        # print("resJSON from uniprot pair matching:", resJSON)
         uniprotID = resJSON['results'][0]['primaryAccession']
     except:
-        raise Exception(f"Unable to find UniProtID for: {sci_crunch_alias}")
+        return []
+        # raise Exception(f"Unable to find UniProtID for: {sci_crunch_alias}")
 
+    # If there was a UniprotID, we can get its aliases
     # Retrieve recommended protein name (required)
     try:
         recommendedName = (resJSON['results'][0]
@@ -2230,30 +2233,13 @@ def _sci_crunch_hits(ab_id: str) -> bool:
         return response.json()
     else:
         return False
-
-def _sci_uni_pair_matching(ab_id_pair: list, 
-             user_uniprotID: str = None) -> list:
+    
+def get_cloneID(ab_id: str) -> str:
     """
-    Retrieves information from SciCrunch and UniProt for an antibody
-
-    Parameters:
-        ab_id_pair (list[str, str]): antibody name and id ('CD90', 'AB_123')
-        user_uniprotID (str): UniProt accession ID (optional, for manual entry)
-
-    Returns:
-        each_hit_results (list): information gathered using SciCrunch and UniProt
-            for an antibody.
-            Example: [(alias, polyclonal, host, uniprotID, otherAliases), ...]
+    Retrieves cloneID for an antibody ID from SciCrunch
     """
-    errors = []
-
-    each_hit_results = []
-
-    csv_alias = ab_id_pair[0]
-    csv_ab_id = ab_id_pair[1]
-
     ### SciCrunch ###
-    sciJSON = _sci_crunch_hits(csv_ab_id)
+    sciJSON = _sci_crunch_hits(ab_id)
 
     if sciJSON != False:
         num_hits = sciJSON['hits']['total']
@@ -2274,38 +2260,77 @@ def _sci_uni_pair_matching(ab_id_pair: list,
             cloneID = (sciJSON['hits']['hits'][i]
                             ['_source']['antibodies']['primary'][0]
                             ['clone']['identifier']).replace('Clone ', '')
-            
-            # If there's a cloneID for polyclonal, raise an error
-            # Reverse: If monoclonal, and it does NOT have a clone ID: then spit an error
-            if clonalBool and cloneID:
-                continue # skip this antibody hit
-
-            host = (sciJSON['hits']['hits'][i]
-                        ['_source']['organisms']['source'][0]
-                        ['species']['name'])
-
-
-            ### UniProt ###
-            try:
-                if user_uniprotID is None:
-                    uniprotID, otherAliases = _uniprot_pair_matching(sci_crunch_alias=sci_alias)
-                    each_hit_results.append((sci_alias, clonalBool, host, uniprotID, cloneID, otherAliases))
-                elif user_uniprotID is not None:
-                    uniprotID, otherAliases = _uniprot_pair_matching(user_uniprotID=user_uniprotID)
-                    each_hit_results.append((sci_alias, clonalBool, host, uniprotID, cloneID, otherAliases))
-            except Exception as e:
-                # logging.warning(f"Skipping {csv_alias}. Refer to antibody_errors.txt")
-                continue # skip this antibody hit
-                
-    if len(each_hit_results) == 0:
-        return []
-    else:
-        modified_results = each_hit_results[0]
-        cloneID = modified_results[4]
-        aliases_list = modified_results[5]
+            return cloneID
     
-        final_results = [cloneID, aliases_list]
-        return final_results
+def ab_subset(idBTO: list = None, idExperiment: list = None) -> list:
+    """ 
+    Used for narrowing down the search space for antibodies. If this is called, then
+    we can eliminate some of the antibodies from the spreadsheet to save redundant queries
+
+    Then, we do further analysis for all the antibodies not shared
+    """
+    params = _config()
+    conn = mysql.connector.connect(**params)
+    cursor = conn.cursor()
+
+    similar_abs_list = []
+
+    # Filter by idBTO
+    if idBTO is not None and idExperiment is None:
+        # Generate placeholders
+        idBTO_placeholders = ','.join(['%s'] * len(idBTO))
+        
+        ab_idBTO_query = """SELECT DISTINCT(antibodies.idAntibody)
+                    FROM cells
+                    INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+                    INNER JOIN tissues on experiments.idBTO = tissues.idBTO
+                    INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+                    INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+                    WHERE experiments.idBTO IN (%s);""" % (idBTO_placeholders)
+        
+        parameters = idBTO
+        cursor.execute(ab_idBTO_query, parameters)
+        similar_abs = cursor.fetchall()
+        similar_abs_list = [ab[0] for ab in similar_abs]
+
+    # Filter by idExperiment
+    elif idBTO is None and idExperiment is not None:
+        idExp_placeholders = ','.join(['%s'] * len(idExperiment))
+        
+        all_idExp_query = """SELECT DISTINCT(antibodies.idAntibody)
+                    FROM cells
+                    INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+                    INNER JOIN tissues on experiments.idBTO = tissues.idBTO
+                    INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+                    INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+                    WHERE experiments.idExperiment IN (%s);""" % (idExp_placeholders)
+        
+        parameters = idExperiment
+        cursor.execute(all_idExp_query, parameters)
+        similar_abs = cursor.fetchall()
+        similar_abs_list = [ab[0] for ab in similar_abs]
+
+    elif idBTO is not None and idExperiment is not None:
+        idBTO_placeholders = ','.join(['%s'] * len(idBTO))
+        idExp_placeholders = ','.join(['%s'] * len(idExperiment))
+        
+        all_idBTO_idExp_query = """SELECT DISTINCT(antibodies.idAntibody)
+                            FROM cells
+                            INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+                            INNER JOIN tissues on experiments.idBTO = tissues.idBTO
+                            INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+                            INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+                            WHERE experiments.idBTO IN (%s) AND
+                            	  experiments.idExperiment IN (%s);""" % (idBTO_placeholders, idExp_placeholders)
+        
+        parameters = idBTO
+        parameters.extend(idExperiment)
+    
+        cursor.execute(all_idBTO_idExp_query, parameters)
+        similar_abs = cursor.fetchall()
+        similar_abs_list = [ab[0] for ab in similar_abs]
+
+    return similar_abs_list
 
 def extract_alnum_lowercase(string) -> str:
     """
@@ -2319,7 +2344,11 @@ def extract_alnum_lowercase(string) -> str:
     """
     return ''.join(ch for ch in string if ch.isalnum()).lower()
 
-def match_antibody(ab_name: str, ab_id: str, option: int = 1) -> list:
+def match_antibody(ab_name: str, 
+                   ab_id: str, 
+                   option: int = 1, 
+                   idBTO: list = None, 
+                   idExperiment: list = None) -> list:
     """
     Finds the most relevant antibodies in the database given an antibody name and ID.
     If an exact antibody is not found in the database, a matching is performed that
@@ -2343,45 +2372,97 @@ def match_antibody(ab_name: str, ab_id: str, option: int = 1) -> list:
     conn = mysql.connector.connect(**params)
     cursor = conn.cursor()
 
-    # Do initial check: Does the antibody ID already exist in the database?
-    check_ab_exists_query = """SELECT COUNT(*)
-                            FROM antibodies 
-                            WHERE antibodies.idAntibody=(%s)"""
+    # If the antibody isn't in the database, start trying to match the next best result
+    # Default option: match based on cloneID and aliases
+    if option == 1:
+        aliases = []
 
-    cursor.execute(check_ab_exists_query, (ab_id, ))
-    ab_exists_result = cursor.fetchone()[0]
+        # Get clone ID 
+        cloneID = get_cloneID(ab_id)
 
-    # If the antibody is already in the database, we can use it
-    if ab_exists_result == 1:
-        return [ab_id]
+        # Get aliases if there is also a valid UniProtID for this antibody 
+        # If there are none, "aliases" remains as an empty list []
+        try:
+            uniprot, found_aliases = _uniprot_aliases(sci_crunch_alias=ab_name)
+            aliases = found_aliases
+        except:
+            aliases = []
 
-    # If the antibody isn't in the database, start trying to 
-    # match the next best result based on CloneID and aliases (default option)
-    if ab_exists_result != 1 and option == 1:
-        # Do a scicrunch_uniprot lookup to find the unknown antibody's
-        # clone ID and aliases
-        clone_aliases = _sci_uni_pair_matching([ab_name, ab_id])
-
-        # If there were no additional information found, return []
-        if len(clone_aliases) == 0:
-            return []
+        # Holds all similar antibodies
+        similar_abs_list = []
         
-        cloneID = clone_aliases[0] # stored as a string
-        aliases = clone_aliases[1] # stored as a list
-        
-        # Find all rows (idAntibody) in the database that share the same clone ID
-        find_ab_similar_clone_query = """SELECT antibodies.idAntibody 
-                                      FROM antibodies
-                                      WHERE antibodies.cloneID = (%s);"""
+        # Find all rows (idAntibody) in the database that share the same clone ID (with varying filters)
+        # For only clone ID
+        if idBTO is None and idExperiment is None:
+            find_ab_similar_clone_query = """SELECT antibodies.idAntibody 
+                                          FROM antibodies
+                                          WHERE antibodies.cloneID = (%s);"""
+    
+            cursor.execute(find_ab_similar_clone_query, (cloneID, ))
+            similar_abs = cursor.fetchall()
+            similar_abs_list = [ab[0] for ab in similar_abs]
 
-        cursor.execute(find_ab_similar_clone_query, (cloneID, ))
-        similar_abs = cursor.fetchall()
-        similar_abs_list = [ab[0] for ab in similar_abs]
+        # For clone ID and tissue filter
+        elif idBTO is not None and idExperiment is None:
+            find_ab_tissue = """SELECT DISTINCT antibodies.idAntibody
+                        FROM cells
+                        INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+                        INNER JOIN tissues ON experiments.idBTO = tissues.idBTO
+                        INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+                        INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+                        WHERE antibodies.cloneID = %s AND
+                              experiments.idBTO IN (%s);"""
+
+            parameters = [cloneID]
+            parameters.extend(idBTO)
+        
+            cursor.execute(find_ab_tissue, parameters)
+            similar_abs = cursor.fetchall()
+            similar_abs_list = [ab[0] for ab in similar_abs]
+
+        # For clone ID and idExperiment filter
+        elif idBTO is None and idExperiment is not None:
+            find_ab_exp = """SELECT DISTINCT (antibodies.idAntibody)
+                        FROM cells
+                        INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+                        INNER JOIN tissues on experiments.idBTO = tissues.idBTO
+                        INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+                        INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+                        WHERE antibodies.cloneID = %s AND
+                        experiments.idExperiment IN (%s);"""
+
+            parameters = [cloneID]
+            parameters.extend(idExperiment)
+        
+            cursor.execute(find_ab_exp, parameters)
+            similar_abs = cursor.fetchall()
+            similar_abs_list = [ab[0] for ab in similar_abs]
+
+        # For clone ID and tissue AND idExperiment filter
+        elif idBTO is not None and idExperiment is not None:
+            find_ab_tissue_exp = """SELECT DISTINCT (antibodies.idAntibody)
+                                FROM cells
+                                INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+                                INNER JOIN tissues on experiments.idBTO = tissues.idBTO
+                                INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+                                INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+                                WHERE antibodies.cloneID = %s AND
+                                experiments.idBTO IN (%s) AND
+                                experiments.idExperiment IN (%s);"""
+
+            parameters = [cloneID]
+            parameters.extend(idBTO)
+            parameters.extend(idExperiment)
+        
+            cursor.execute(find_ab_tissue_exp, parameters)
+            similar_abs = cursor.fetchall()
+            similar_abs_list = [ab[0] for ab in similar_abs]
 
         # If there were more than 1 'similar' antibody based on cloneID
         # Investigate further by checking for a matching alias between 
-        # antibody in database and the unknown antibody
-        if len(similar_abs_list) > 0:
+        # antibody in database and the unknown antibody. 
+        # This will only happen if there was a valid UniProt ID found earlier
+        if len(similar_abs_list) > 0 and len(aliases) > 0:
 
             matched_antibodies = []
             
@@ -2407,35 +2488,103 @@ def match_antibody(ab_name: str, ab_id: str, option: int = 1) -> list:
 
             return matched_antibodies
 
+        # If only searching based on cloneID
+        elif len(similar_abs_list) > 0:
+            return similar_abs_list
+
+        # No results from matching by cloneID and/or aliases
         else:
-            return [] # for now, if there were no matching clone ID, we should skip this ab
+            return []
 
     # Option 2: Search by only alias and antibody target, no clone ID
-    if ab_exists_result != 1 and option == 2:
-        # Do a scicrunch_uniprot lookup to find the unknown antibody's
-        # abTarget and aliases
-        clone_aliases = _sci_uni_pair_matching([ab_name, ab_id])
+    # If there are no aliases (no valid UniprotID), then only search by antibody target
+    # if ab_exists_result != 1 and option == 2:
+    if option == 2:
+        aliases = []
 
-        # If there were no additional information found, return []
-        if len(clone_aliases) == 0:
-            return []
+        # Get aliases if there is also a valid UniProtID for this antibody 
+        # If there are none, "aliases" remains as an empty list []
+        try:
+            uniprot, found_aliases = _uniprot_aliases(sci_crunch_alias=ab_name)
+            aliases = found_aliases
+        except:
+            aliases = []
+
+        # Holds all similar antibodies
+        similar_abs_list = []
+
+        # Find all rows (idAntibody) in the database that share the same abTarget/ab_name (with varying filters)
+        # For only ab_name
+        if idBTO is None and idExperiment is None:
+            # Find all rows (idAntibody) in the database that share the same abTarget
+            find_ab_similar_target_query = """SELECT antibodies.idAntibody 
+                                          FROM antibodies
+                                          WHERE antibodies.abTarget = (%s);"""
+    
+            cursor.execute(find_ab_similar_target_query, (ab_name, ))
+            similar_abs = cursor.fetchall()
+            similar_abs_list = [ab[0] for ab in similar_abs]
+
+        # For ab_name and tissue filter
+        elif idBTO is not None and idExperiment is None:
+            find_ab_tissue = """SELECT DISTINCT antibodies.idAntibody
+                        FROM cells
+                        INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+                        INNER JOIN tissues ON experiments.idBTO = tissues.idBTO
+                        INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+                        INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+                        WHERE antibodies.abTarget = %s AND
+                              experiments.idBTO IN (%s);"""
+
+            parameters = [ab_name]
+            parameters.extend(idBTO)
         
-        # abTarget = abTarget_aliases[0] # stored as a string
-        aliases = clone_aliases[1] # stored as a list
+            cursor.execute(find_ab_tissue, parameters)
+            similar_abs = cursor.fetchall()
+            similar_abs_list = [ab[0] for ab in similar_abs]
 
-        # Find all rows (idAntibody) in the database that share the same abTarget
-        find_ab_similar_target_query = """SELECT antibodies.idAntibody 
-                                      FROM antibodies
-                                      WHERE antibodies.abTarget = (%s);"""
+        # For ab_name and idExperiment filter
+        elif idBTO is None and idExperiment is not None:
+            find_ab_exp = """SELECT DISTINCT antibodies.idAntibody
+                        FROM cells
+                        INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+                        INNER JOIN tissues ON experiments.idBTO = tissues.idBTO
+                        INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+                        INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+                        WHERE antibodies.abTarget = %s AND
+                        experiments.idExperiment IN (%s);"""
 
-        cursor.execute(find_ab_similar_target_query, (ab_name, ))
-        similar_abs = cursor.fetchall()
-        similar_abs_list = [ab[0] for ab in similar_abs]
+            parameters = [ab_name]
+            parameters.extend(idExperiment)
+        
+            cursor.execute(find_ab_exp, parameters)
+            similar_abs = cursor.fetchall()
+            similar_abs_list = [ab[0] for ab in similar_abs]
+
+        # For ab_name and tissue AND idExperiment filter
+        elif idBTO is not None and idExperiment is not None:
+            find_ab_tissue_exp = """SELECT DISTINCT (antibodies.idAntibody)
+                                FROM cells
+                                INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+                                INNER JOIN tissues on experiments.idBTO = tissues.idBTO
+                                INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+                                INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+                                WHERE antibodies.abTarget = %s AND
+                                experiments.idBTO IN (%s) AND
+                                experiments.idExperiment IN (%s);"""
+
+            parameters = [ab_name]
+            parameters.extend(idBTO)
+            parameters.extend(idExperiment)
+        
+            cursor.execute(find_ab_tissue_exp, parameters)
+            similar_abs = cursor.fetchall()
+            similar_abs_list = [ab[0] for ab in similar_abs]
 
         # If there were more than 1 'similar' antibody based on cloneID
         # Investigate further by checking for a matching alias between 
         # antibody in database and the unknown antibody
-        if len(similar_abs_list) > 0:
+        if len(similar_abs_list) > 0 and len(aliases) > 0:
             matched_antibodies = []
             
             for similar_ab in similar_abs_list:
@@ -2459,25 +2608,30 @@ def match_antibody(ab_name: str, ab_id: str, option: int = 1) -> list:
                     continue # skip to next result
 
             return matched_antibodies
+            
+        # If only searching based on abTarget
+        elif len(similar_abs_list) > 0:
+            return similar_abs_list
 
+        # If no results from abTarget and aliases
         else:
-            return [] # for now, if there were no matching clone ID, we should skip this ab
+            return []
 
     # Option 3: strict search by antibody ID only in the database
-    if ab_exists_result != 1 and option == 3:
-        check_ab_exists_query = """SELECT COUNT(*)
-                            FROM antibodies 
-                            WHERE antibodies.idAntibody=(%s)"""
+    if option == 3:
+        check_ab_exists_query = """SELECT antibodies.idAntibody
+                                FROM antibodies 
+                                WHERE antibodies.idAntibody=(%s);"""
 
         cursor.execute(check_ab_exists_query, (ab_id, ))
-        ab_exists_result = cursor.fetchone()[0]
-
-        if ab_exists_result == 1:
+        ab_exists_result = cursor.fetchone()
+        
+        if ab_exists_result:
             return [ab_id]
         else:
             return []
         
-def parse_antibodies(antibody_pairs: list, option = 1) -> dict:
+def parse_antibodies(antibody_pairs: list, option = 1, idBTO=None, idExperiment=None) -> dict:
     """
     Parses each antibody name and ID in the experiment spreadsheet to 
     find matching antibodies in the database.
@@ -2492,9 +2646,29 @@ def parse_antibodies(antibody_pairs: list, option = 1) -> dict:
     """
     antibodies_to_query = []
     database_to_original_ab_dict = {} # keys: ab retrieved from db, value: original antibody from dataset
+
+    # Get all antibodies ID from the spreadsheet
+    antibody_in_spreadsheet = [antibody_and_id[1] for antibody_and_id in antibody_pairs]
+
+    # Narrow the ab search space if provided idBTO or idExp
+    if idBTO is not None or idExperiment is not None:
+        # Find all antibodies from the idBTO/idExperiment
+        ab_in_db = ab_subset(idBTO=idBTO, idExperiment=idExperiment)
     
-    for antibody_and_id in antibody_pairs:
-        result = match_antibody(antibody_and_id[0], antibody_and_id[1], option=option)
+        # Find shared antibodies
+        shared_antibodies = list(set(antibody_in_spreadsheet) & set(ab_in_db))
+    
+        # For all shared antibodies, add them to the dict. Remove this from ab in spreadsheet to reduce the number of queries
+        for ab in shared_antibodies:
+            database_to_original_ab_dict[ab] = ab
+            antibody_in_spreadsheet.remove(ab)
+
+    # At this point, we can start performing the queries for the remaining antibodies
+    remaining_ab_pairs = [antibody_and_id for antibody_and_id in antibody_pairs if antibody_and_id[1] in antibody_in_spreadsheet]
+
+    for antibody_and_id in remaining_ab_pairs:
+        print(f"Looking up: {antibody_and_id[0]}, {antibody_and_id[1]}")
+        result = match_antibody(antibody_and_id[0], antibody_and_id[1], option=option, idBTO=idBTO, idExperiment=idExperiment)
         if len(result) > 0: # If multiple antibodies due to matching, take first hit
             antibodies_to_query.append(result[0])
             database_to_original_ab_dict[result[0]] = antibody_and_id[1]
@@ -3020,7 +3194,10 @@ def downsample_reference_table(antibody_pairs: list,
     """
     
     # Create antibody dictionary
-    antibodies_dict = parse_antibodies(antibody_pairs, option = parse_option) 
+    antibodies_dict = parse_antibodies(antibody_pairs, 
+                                       option = parse_option, 
+                                       idBTO=idBTO, 
+                                       idExperiment=idExperiment) 
 
     antibodies = list(antibodies_dict.keys())
                                    
