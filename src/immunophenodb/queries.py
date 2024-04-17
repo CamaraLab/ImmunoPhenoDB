@@ -528,7 +528,6 @@ def _connect_db_tables():
                     idCell INT UNSIGNED NOT NULL AUTO_INCREMENT,
                     idCellOriginal VARCHAR(255) NOT NULL,
                     idExperiment INT UNSIGNED NOT NULL,
-                    certainty FLOAT NULL,
                     PRIMARY KEY (idCell, idExperiment),
                     FOREIGN KEY (idExperiment) REFERENCES experiments(idExperiment),
                     FOREIGN KEY (idCL) REFERENCES cell_types(idCL));
@@ -683,15 +682,14 @@ def _connect_db_procedures():
             IN idCL CHAR(10),
             IN idCellOriginal VARCHAR(255),
             IN idExperiment INT,
-            IN certainty FLOAT,
             IN label VARCHAR(128)
         )
         BEGIN 
             INSERT IGNORE INTO cell_types(idCL, label) VALUES (idCL, label);
         
-            INSERT INTO cells(idCL, idCellOriginal, idExperiment, certainty) 
-            VALUES (idCL, idCellOriginal, idExperiment, certainty)
-            ON DUPLICATE KEY UPDATE idCL=idCL, idCellOriginal=idCellOriginal, idExperiment=idExperiment, certainty=certainty;
+            INSERT INTO cells(idCL, idCellOriginal, idExperiment) 
+            VALUES (idCL, idCellOriginal, idExperiment)
+            ON DUPLICATE KEY UPDATE idCL=idCL, idCellOriginal=idCellOriginal, idExperiment=idExperiment;
         END 
     """
 
@@ -1233,25 +1231,30 @@ def _connect_db_cells(idExperiment: int,
     if IPD.raw_cell_labels is None or IPD.label_certainties is None:
         raise Exception("Error. No cell labels found. Run annotate_cells() first.")
 
-    labels = IPD.raw_cell_labels["celltype"]
-    deltas = IPD.label_certainties
+    if IPD.raw_cell_labels is not None and IPD.norm_cell_labels is None:
+        raise Exception("Error. Cell labels found, but data is not normalized.")
+
+    # labels = IPD.raw_cell_labels["celltype"]
+    # deltas = IPD.label_certainties
+
+    labels = IPD.norm_cell_labels
 
     # Apply any filtering by delta or certainity value
-    combined = pd.concat([labels, deltas], axis=1)
+    # combined = pd.concat([labels, deltas], axis=1)
 
     # Apply same filtering to cells that were filtered out during normalization
-    combined_norm = combined.loc[IPD.normalized_counts.index]
+    # combined_norm = combined.loc[IPD.normalized_counts.index]
 
     print("Inserting new cells...")  
     # Insert cells that are in the combined singleR dataframe
-    with _tqdm_output(tqdm(combined_norm.iterrows(), total=len(combined_norm))) as tqdm_cells:
-        for index, row in tqdm_cells:
+    with _tqdm_output(tqdm(labels.iterrows(), total=len(labels))) as tqdm_cells:
+        for idCellOriginal, row in tqdm_cells:
             check_cell_exists_query = """SELECT COUNT(*)
                                     FROM cells
                                     WHERE cells.idCellOriginal=(%s)
                                     AND cells.idExperiment=(%s)"""
             # Parameter must be converted from str to tuple
-            cursor.execute(check_cell_exists_query, (index, idExperiment, ))
+            cursor.execute(check_cell_exists_query, (idCellOriginal, idExperiment, ))
             cell_exists_result = cursor.fetchone()[0]
             if cell_exists_result == 0:
                 try:
@@ -1260,9 +1263,10 @@ def _connect_db_cells(idExperiment: int,
                     # cell_type_name = idCL_info['label']
 
                     # EDIT: We already have the readable name from annotate_cells, no need to do it here
-                    cell_type_name = row['celltype']
+                    cell_type_id = row["labels"]
+                    cell_type_name = row["celltype"]
 
-                    cursor.callproc("insert_cell", args=(row['labels'], index, idExperiment, row['delta.next'],
+                    cursor.callproc("insert_cell", args=(cell_type_id, idCellOriginal, idExperiment,
                                                          cell_type_name))
                     conn.commit()
                 except:
@@ -1279,7 +1283,7 @@ def _connect_db_cells(idExperiment: int,
     db_cells_list = [cell[0] for cell in db_cells]
 
     # Cells in dataframe
-    sr_cells = combined_norm.index
+    sr_cells = labels.index
 
     # Find difference between two using XOR operator
     diff = set(db_cells_list) ^ set(sr_cells)
