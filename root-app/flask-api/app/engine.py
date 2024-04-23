@@ -3207,25 +3207,25 @@ def downsample_reference_table(antibody_pairs: list,
     # Drop all columns (antibodies) that only contain 0s (false)
     first_ab_drop = drop_antibodies(initial_tb)
 
-    # Calculate pairwise distances between idExperiment and remaining antibodies
-    pairwise_dist = pairwise_distance_matrix(first_ab_drop)
+    # # Calculate pairwise distances between idExperiment and remaining antibodies
+    # pairwise_dist = pairwise_distance_matrix(first_ab_drop)
                                    
-    # Create an adjacency matrix based on filtered pairwise dist values
-    adj_matrix = pairwise_adjacency_matrix(pairwise_dist, pairwise_threshold)
+    # # Create an adjacency matrix based on filtered pairwise dist values
+    # adj_matrix = pairwise_adjacency_matrix(pairwise_dist, pairwise_threshold)
                                    
-    # Create graph and find the giant component's nodes. These nodes values correspond
-    # to the index values found in first_ab_drop
-    gc_nodes_index = find_giant_component(adj_matrix)
+    # # Create graph and find the giant component's nodes. These nodes values correspond
+    # # to the index values found in first_ab_drop
+    # gc_nodes_index = find_giant_component(adj_matrix)
 
-    # Filter out experiments from first_ab_drop that were not in the giant component
-    final_tb = filter_exp_truth_table(first_ab_drop, gc_nodes_index)
+    # # Filter out experiments from first_ab_drop that were not in the giant component
+    # final_tb = filter_exp_truth_table(first_ab_drop, gc_nodes_index)
 
-    # Drop all columns again (antibodies) that only contain 0s (false)
-    second_ab_drop = drop_antibodies(final_tb)
+    # # Drop all columns again (antibodies) that only contain 0s (false)
+    # second_ab_drop = drop_antibodies(final_tb)
 
     # Use the remaining antibodies and experiments to query for cells in the database
-    antibodies_to_query = [ab for ab in second_ab_drop.columns if ab != "idExperiment"] 
-    experiments_to_query = list(second_ab_drop["idExperiment"])
+    antibodies_to_query = [ab for ab in first_ab_drop.columns if ab != "idExperiment"] 
+    experiments_to_query = list(first_ab_drop["idExperiment"])
                                    
     big_table = entire_reference_table(antibodies_to_query, experiments_to_query)
 
