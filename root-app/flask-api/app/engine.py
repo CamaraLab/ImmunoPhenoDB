@@ -2462,7 +2462,7 @@ def match_antibody(ab_name: str,
         # Investigate further by checking for a matching alias between 
         # antibody in database and the unknown antibody. 
         # This will only happen if there was a valid UniProt ID found earlier
-        if len(similar_abs_list) > 0 and len(aliases) > 0:
+        if len(similar_abs_list) > 1 and len(aliases) > 0:
 
             matched_antibodies = []
             
@@ -2581,10 +2581,10 @@ def match_antibody(ab_name: str,
             similar_abs = cursor.fetchall()
             similar_abs_list = [ab[0] for ab in similar_abs]
 
-        # If there were more than 1 'similar' antibody based on cloneID
+        # If there were more than 1 'similar' antibody based on antibody target
         # Investigate further by checking for a matching alias between 
         # antibody in database and the unknown antibody
-        if len(similar_abs_list) > 0 and len(aliases) > 0:
+        if len(similar_abs_list) > 1 and len(aliases) > 0:
             matched_antibodies = []
             
             for similar_ab in similar_abs_list:
@@ -2644,7 +2644,6 @@ def parse_antibodies(antibody_pairs: list, option = 1, idBTO=None, idExperiment=
         database_to_original_ab_dict (dict): dictionary containing IDs where:
             key: antibody ID from database, value: original antibody ID
     """
-    antibodies_to_query = []
     database_to_original_ab_dict = {} # keys: ab retrieved from db, value: original antibody from dataset
 
     # Get all antibodies ID from the spreadsheet
@@ -2669,9 +2668,24 @@ def parse_antibodies(antibody_pairs: list, option = 1, idBTO=None, idExperiment=
     for antibody_and_id in remaining_ab_pairs:
         print(f"Looking up: {antibody_and_id[0]}, {antibody_and_id[1]}")
         result = match_antibody(antibody_and_id[0], antibody_and_id[1], option=option, idBTO=idBTO, idExperiment=idExperiment)
-        if len(result) > 0: # If multiple antibodies due to matching, take first hit
-            antibodies_to_query.append(result[0])
-            database_to_original_ab_dict[result[0]] = antibody_and_id[1]
+        if len(result) > 0: 
+            print("\tResults:", result)
+            # If matching by clone ID (option 1), and multiple results appear, consider ALL antibody hits for this spreadsheet antibody
+            if option == 1:
+                print(f"\tOption 1: We consider all of these antibodies for {antibody_and_id[1]}")
+                for hit in result:
+                    database_to_original_ab_dict[hit] = antibody_and_id[1]
+
+            # Don't consider all hits as-is when matching by antibody target
+            elif option == 2:
+                print(f"\tOption 2: We need to check for the actual result. If found, use it. If not, take first hit")
+                # Check if the actual antibody ID is in the results. If so, use that then
+                if (antibody_and_id[1] in result):
+                    print("\tActual antibody was here")
+                    database_to_original_ab_dict[antibody_and_id[1]] = antibody_and_id[1]
+                else:
+                    print("\tAntibody not here. Taking first hit instead")
+                    database_to_original_ab_dict[result[0]] = antibody_and_id[1]
         else:
             continue
 
@@ -3229,9 +3243,15 @@ def downsample_reference_table(antibody_pairs: list,
                                    
     big_table = entire_reference_table(antibodies_to_query, experiments_to_query)
 
-    # Convert big_table into CITE-SEQ format (cells x antibodies)
+    # Antibodies in the big table must be consistent with the antibodies in the mapping dictionary
+    # This is because matching by clone ID can have multiple database antibodies matched to the same spreadsheet antibody
+    big_table_copy = big_table.copy(deep=True)
+    big_table_copy['idAntibody'] = big_table_copy['idAntibody'].map(antibodies_dict)
+
+    # Convert big_table into CITE-SEQ format (cells x antibodies) using pivot tables
     # Last 2 columns: idCL, idExperiment
-    format_df = format_reference_table(big_table, na_threshold=na_threshold)
+    format_df = format_reference_table(big_table_copy, na_threshold=na_threshold)
+    # Double check that all antibody IDs are consistent with the ones in the mapping dictionary
     renamed_format_df = format_df.rename(columns=antibodies_dict, inplace=False)
                                    
     # Downsample to 10k cells
