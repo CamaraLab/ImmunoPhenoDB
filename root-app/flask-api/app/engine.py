@@ -2130,27 +2130,27 @@ def _uniprot_aliases(sci_crunch_alias: str = None,
     # Searching for UniProtID using SciCrunch alias if not user provided
     if sci_crunch_alias is not None and user_uniprotID is None:
         # Strictest level search
-        protein_gene_response = requests.get(UNIPROT_BASE + UNIPROT_ENDPOINT, params=protein_gene_params)
+        protein_gene_response = requests.get(UNIPROT_BASE + UNIPROT_ENDPOINT, params=protein_gene_params, timeout=10)
         protein_gene_JSON = protein_gene_response.json()
         
         if protein_gene_response.status_code == 200 and len(protein_gene_JSON['results']) != 0:
             resJSON = protein_gene_JSON
         else:
             # Protein only search
-            protein_response = requests.get(UNIPROT_BASE + UNIPROT_ENDPOINT, params=protein_params)
+            protein_response = requests.get(UNIPROT_BASE + UNIPROT_ENDPOINT, params=protein_params, timeout=10)
             protein_JSON = protein_response.json()
 
             if protein_response.status_code == 200 and len(protein_JSON['results']) != 0:
                 resJSON = protein_JSON
             else:
                 # Gene only search
-                gene_response = requests.get(UNIPROT_BASE + UNIPROT_ENDPOINT, params=gene_params)
+                gene_response = requests.get(UNIPROT_BASE + UNIPROT_ENDPOINT, params=gene_params, timeout=10)
                 gene_JSON = gene_response.json()
                 resJSON = gene_JSON
 
     # Searching for UniProtID if accession ID is user provided
     elif sci_crunch_alias is None and user_uniprotID is not None:
-        accession_response = requests.get(UNIPROT_BASE + UNIPROT_ENDPOINT, params=accession_params)
+        accession_response = requests.get(UNIPROT_BASE + UNIPROT_ENDPOINT, params=accession_params, timeout=10)
         resJSON = accession_response.json()
         
     # Retrieve Uniprot ID using SciCrunch alias (required)
@@ -2228,7 +2228,7 @@ def _sci_crunch_hits(ab_id: str) -> bool:
         response (json): JSON result if successful response
         false (bool): False if error with response
     """
-    response = requests.get(SCI_CRUNCH_BASE + SCI_RRID_ENDPOINT + ab_id + SCI_FILE)
+    response = requests.get(SCI_CRUNCH_BASE + SCI_RRID_ENDPOINT + ab_id + SCI_FILE, timeout=10)
     if response.status_code == 200:
         return response.json()
     else:
