@@ -346,8 +346,9 @@ def annotate_cells(IPD,
         
         labels_df['celltype'] = labels_df['labels'].map(complete_map_dict)
         
-        # Store in IPD object
-        IPD.raw_cell_labels = labels_df
+        # Store in IPD object in both the raw and norm fields
+        IPD._cell_labels = labels_df # raw
+        IPD._cell_labels_filt_df = labels_df # norm
         IPD._temp_labels = labels_df
         
         IPD.label_certainties = singleR_df
