@@ -1228,16 +1228,16 @@ def _connect_db_cells(idExperiment: int,
         raise Exception("Error. idExperiment not found in database")
 
     # Check if IPD contains cell labels and certainties
-    if IPD.raw_cell_labels is None or IPD.label_certainties is None:
+    if IPD._cell_labels is None or IPD.label_certainties is None:
         raise Exception("Error. No cell labels found. Run annotate_cells() first.")
 
-    if IPD.raw_cell_labels is not None and IPD.norm_cell_labels is None:
+    if IPD._cell_labels is not None and IPD.labels is None:
         raise Exception("Error. Cell labels found, but data is not normalized.")
 
-    # labels = IPD.raw_cell_labels["celltype"]
+    # labels = IPD._cell_labels["celltype"]
     # deltas = IPD.label_certainties
 
-    labels = IPD.norm_cell_labels
+    labels = IPD.labels # normalized cells labels
 
     # Apply any filtering by delta or certainity value
     # combined = pd.concat([labels, deltas], axis=1)
