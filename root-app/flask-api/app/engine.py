@@ -25,6 +25,7 @@ import networkx as nx
 import numpy as np
 from random import sample
 import math
+import multiprocessing
 
 SCI_CRUNCH_BASE = "http://www.scicrunch.org"
 SCI_RRID_ENDPOINT = "/resolver/"
@@ -2631,6 +2632,43 @@ def match_antibody(ab_name: str,
         else:
             return []
         
+def process_antibody(antibody_and_id, option, idBTO, idExperiment):
+    print(f"Looking up: {antibody_and_id[0]}, {antibody_and_id[1]}")
+    result = match_antibody(antibody_and_id[0], antibody_and_id[1], option=option, idBTO=idBTO, idExperiment=idExperiment)
+    output_dict = {}
+    if len(result) > 0: 
+        print("\tResults:", result)
+        if option == 1:
+            print(f"\tOption 1: We consider all of these antibodies for {antibody_and_id[1]}")
+            for hit in result:
+                output_dict[hit] = antibody_and_id[1]
+        elif option == 2:
+            print(f"\tOption 2: We need to check for the actual result. If found, use it. If not, take first hit")
+            if antibody_and_id[1] in result:
+                print("\tActual antibody was here")
+                output_dict[antibody_and_id[1]] = antibody_and_id[1]
+            else:
+                print("\tAntibody not here. Taking first hit instead")
+                output_dict[result[0]] = antibody_and_id[1]
+    return output_dict
+
+def parallel_process_antibodies(remaining_ab_pairs, option, idBTO, idExperiment, num_processes=None):
+    if num_processes is None:
+        num_processes = multiprocessing.cpu_count()  # Use the number of available CPU cores by default, up to 8
+        if num_processes > 8:
+            num_processes = 8
+    pool = multiprocessing.Pool(processes=num_processes)
+    results = pool.starmap(process_antibody, [(ab, option, idBTO, idExperiment) for ab in remaining_ab_pairs])
+    pool.close()
+    pool.join()
+    
+    # Combine dictionaries from all processes into one big dictionary
+    combined_dict = {}
+    for result_dict in results:
+        combined_dict.update(result_dict)
+    
+    return combined_dict
+        
 def parse_antibodies(antibody_pairs: list, option = 1, idBTO=None, idExperiment=None) -> dict:
     """
     Parses each antibody name and ID in the experiment spreadsheet to 
@@ -2648,46 +2686,62 @@ def parse_antibodies(antibody_pairs: list, option = 1, idBTO=None, idExperiment=
 
     # Get all antibodies ID from the spreadsheet
     antibody_in_spreadsheet = [antibody_and_id[1] for antibody_and_id in antibody_pairs]
+    print("Antibody_in_spreadsheet:", antibody_in_spreadsheet)
 
     # Narrow the ab search space if provided idBTO or idExp
     if idBTO is not None or idExperiment is not None:
         # Find all antibodies from the idBTO/idExperiment
         ab_in_db = ab_subset(idBTO=idBTO, idExperiment=idExperiment)
+        print("ab_in_db:", ab_in_db)
     
         # Find shared antibodies
         shared_antibodies = list(set(antibody_in_spreadsheet) & set(ab_in_db))
+        print("shared_antibodies:", shared_antibodies)
     
         # For all shared antibodies, add them to the dict. Remove this from ab in spreadsheet to reduce the number of queries
         for ab in shared_antibodies:
+            print(f"Adding {ab} to the dictionary. Removing it from antibody_from_spreadsheet")
             database_to_original_ab_dict[ab] = ab
             antibody_in_spreadsheet.remove(ab)
 
     # At this point, we can start performing the queries for the remaining antibodies
     remaining_ab_pairs = [antibody_and_id for antibody_and_id in antibody_pairs if antibody_and_id[1] in antibody_in_spreadsheet]
+    print("remaining_ab_pairs:", remaining_ab_pairs)
 
-    for antibody_and_id in remaining_ab_pairs:
-        print(f"Looking up: {antibody_and_id[0]}, {antibody_and_id[1]}")
-        result = match_antibody(antibody_and_id[0], antibody_and_id[1], option=option, idBTO=idBTO, idExperiment=idExperiment)
-        if len(result) > 0: 
-            print("\tResults:", result)
-            # If matching by clone ID (option 1), and multiple results appear, consider ALL antibody hits for this spreadsheet antibody
-            if option == 1:
-                print(f"\tOption 1: We consider all of these antibodies for {antibody_and_id[1]}")
-                for hit in result:
-                    database_to_original_ab_dict[hit] = antibody_and_id[1]
+    # If and ONLY if there are remaining antibodies, then do we call the match_antibody step
+    if len(remaining_ab_pairs) > 0:
+        print("remaining_ab_pairs not empty. Performing match_antibody...")
+        # Call parallel_process_antibodies. This does NOT include antibodies found earlier that were already in the database
+        remaining_ab_dict = parallel_process_antibodies(remaining_ab_pairs, option, idBTO, idExperiment)
 
-            # Don't consider all hits as-is when matching by antibody target
-            elif option == 2:
-                print(f"\tOption 2: We need to check for the actual result. If found, use it. If not, take first hit")
-                # Check if the actual antibody ID is in the results. If so, use that then
-                if (antibody_and_id[1] in result):
-                    print("\tActual antibody was here")
-                    database_to_original_ab_dict[antibody_and_id[1]] = antibody_and_id[1]
-                else:
-                    print("\tAntibody not here. Taking first hit instead")
-                    database_to_original_ab_dict[result[0]] = antibody_and_id[1]
-        else:
-            continue
+        # If there were results for match_antibody, merge it with the original one and return it as a whole
+        if remaining_ab_dict:
+            database_to_original_ab_dict.update(remaining_ab_dict)
+            return database_to_original_ab_dict 
+
+    # for antibody_and_id in remaining_ab_pairs:
+    #     print(f"Looking up: {antibody_and_id[0]}, {antibody_and_id[1]}")
+    #     result = match_antibody(antibody_and_id[0], antibody_and_id[1], option=option, idBTO=idBTO, idExperiment=idExperiment)
+    #     if len(result) > 0: 
+    #         print("\tResults:", result)
+    #         # If matching by clone ID (option 1), and multiple results appear, consider ALL antibody hits for this spreadsheet antibody
+    #         if option == 1:
+    #             print(f"\tOption 1: We consider all of these antibodies for {antibody_and_id[1]}")
+    #             for hit in result:
+    #                 database_to_original_ab_dict[hit] = antibody_and_id[1]
+
+    #         # Don't consider all hits as-is when matching by antibody target
+    #         elif option == 2:
+    #             print(f"\tOption 2: We need to check for the actual result. If found, use it. If not, take first hit")
+    #             # Check if the actual antibody ID is in the results. If so, use that then
+    #             if (antibody_and_id[1] in result):
+    #                 print("\tActual antibody was here")
+    #                 database_to_original_ab_dict[antibody_and_id[1]] = antibody_and_id[1]
+    #             else:
+    #                 print("\tAntibody not here. Taking first hit instead")
+    #                 database_to_original_ab_dict[result[0]] = antibody_and_id[1]
+    #     else:
+    #         continue
 
     return database_to_original_ab_dict
 
@@ -3208,12 +3262,14 @@ def downsample_reference_table(antibody_pairs: list,
     """
     
     # Create antibody dictionary
+    print("Parsing antibodies...")
     antibodies_dict = parse_antibodies(antibody_pairs, 
                                        option = parse_option, 
                                        idBTO=idBTO, 
                                        idExperiment=idExperiment) 
-
+    print("antibodies_dict after parse_antibodies:", antibodies_dict)
     antibodies = list(antibodies_dict.keys())
+    print("Antibodies to find exp truth table:", antibodies)
                                    
     # Find truth table for all experiments and antibodies
     initial_tb = find_exp_truth_table(antibodies=antibodies, idBTO=idBTO, idExperiment=idExperiment)
