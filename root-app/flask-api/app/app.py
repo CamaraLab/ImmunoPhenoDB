@@ -200,16 +200,14 @@ def stveareference():
     idBTO = res_dict["idBTO"]
     idExperiment = res_dict["idExperiment"]
     parse_option = res_dict["parse_option"]
-    pairwise_threshold = res_dict["pairwise_threshold"]
-    na_threshold = res_dict["na_threshold"]
+    # pairwise_threshold = res_dict["pairwise_threshold"]
+    # na_threshold = res_dict["na_threshold"]
     population_size = res_dict["population_size"]
 
     result_df = downsample_reference_table(antibody_pairs=antibody_pairs, 
                                            idBTO=idBTO,
                                            idExperiment=idExperiment,
                                            parse_option=parse_option,
-                                           pairwise_threshold=pairwise_threshold,
-                                           na_threshold=na_threshold,
                                            population_size=population_size)
     result_json = result_df.to_json()
 

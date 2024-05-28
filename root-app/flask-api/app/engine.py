@@ -3306,7 +3306,7 @@ def downsample_reference_table(antibody_pairs: list,
 
     # Convert big_table into CITE-SEQ format (cells x antibodies) using pivot tables
     # Last 2 columns: idCL, idExperiment
-    format_df = format_reference_table(big_table_copy, na_threshold=na_threshold)
+    format_df = format_reference_table(big_table_copy)
     # Double check that all antibody IDs are consistent with the ones in the mapping dictionary
     renamed_format_df = format_df.rename(columns=antibodies_dict, inplace=False)
                                    
