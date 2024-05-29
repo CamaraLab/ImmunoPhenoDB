@@ -19,7 +19,8 @@ from .engine import (
     which_celltypes,
     which_experiments,
     get_tissues,
-    downsample_reference_table
+    downsample_reference_table,
+    database_statistics
 )
 
 @app.route('/idcls', methods=['GET'])
@@ -212,6 +213,11 @@ def stveareference():
     result_json = result_df.to_json()
 
     return result_json
+
+@app.route("/databasestatistics", methods=['GET'])
+def databasestatistics():
+    stats_json = database_statistics()
+    return stats_json
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000)
