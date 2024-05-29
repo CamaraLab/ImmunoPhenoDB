@@ -86,6 +86,20 @@ export const tissues = async(req: any, res: Response) => {
     }
 }
 
+export const databaseStatistics = async(req: any, res: Response) => {
+    try{
+        const flask_databaseStatistics = await axios.get(`${system_URL}/databasestatistics`)
+        console.log("database_statistics:", flask_databaseStatistics)
+        res.status(200).send(flask_databaseStatistics.data)
+    }
+    catch (error) {
+        if (error) {
+            console.log(error)
+            res.status(400).send("Bad request. Error with databaseStatistics server request.")
+        }
+    }
+}
+
 export const findAbs = async (req: Request, res: Response) => {
     try {
         console.log("findAbs recieved from client:", req.body)
@@ -220,6 +234,7 @@ export const stveaReference = async (req: Request, res: Response) => {
         }
     }
 }
+
 
 export const convertCellType = async (req: Request, res: Response) => {
     console.log("we entered convertCellType")

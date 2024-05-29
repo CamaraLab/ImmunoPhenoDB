@@ -10,13 +10,15 @@ import {idCLs,
         whichCellTypes,
         whichExperiments,
         stveaReference,
-        convertCellType } from '../controllers/db_calls.js'
+        convertCellType,
+        databaseStatistics } from '../controllers/db_calls.js'
 
 
 const router : Router = express.Router()
 
 router.get('/idcls', idCLs)
 router.get('/tissues', tissues)
+router.get('/databasestatistics', databaseStatistics)
 
 router.post('/findabs', findAbs)
 router.post('/plotabs', plotAbs)
