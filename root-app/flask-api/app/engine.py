@@ -3317,3 +3317,66 @@ def downsample_reference_table(antibody_pairs: list,
     clean_downsampled_df = remove_all_zeros_or_na(downsampled_df)
     
     return clean_downsampled_df
+
+def database_statistics():
+    params = _config()
+    conn = mysql.connector.connect(**params)
+    cursor = conn.cursor()
+
+    number_antibodies_query = """SELECT 
+                              COUNT(*) 
+                              FROM antibodies;"""
+    
+    number_clones_query =   """SELECT COUNT(DISTINCT(antibodies.cloneID)) 
+                            FROM antibodies;"""
+
+    number_abTarget_query = """SELECT COUNT(DISTINCT(antibodies.abTarget))
+                            FROM antibodies;"""
+    
+    number_experiments_query = """SELECT COUNT(*) FROM experiments;"""
+
+    number_tissues_query =  """SELECT COUNT(*) FROM tissues;"""
+
+    number_cells_query =    """SELECT COUNT(*) FROM cells;"""
+    
+    avg_exp_per_ab_query =  """WITH unique_counts AS (
+                                SELECT
+                                    idAntibody,
+                                    COUNT(DISTINCT idExperiment) AS unique_experiment_count
+                                FROM
+                                    antigen_expression
+                                GROUP BY
+                                    idAntibody
+                            )
+                            SELECT
+                                SUM(unique_experiment_count) / COUNT(*) AS average_unique_experiment_count
+                            FROM
+                                unique_counts;"""
+
+    cursor.execute(number_antibodies_query)
+    number_antibodies = cursor.fetchone()
+    cursor.execute(number_clones_query)
+    number_clones = cursor.fetchone()
+    cursor.execute(number_abTarget_query)
+    number_abTarget = cursor.fetchone()
+    cursor.execute(number_experiments_query)
+    number_experiments = cursor.fetchone()
+    cursor.execute(number_tissues_query)
+    number_tissues = cursor.fetchone()
+    cursor.execute(number_cells_query)
+    number_cells = cursor.fetchone()
+    cursor.execute(avg_exp_per_ab_query)
+    avg_exp_per_ab = cursor.fetchone()
+
+    # Create payload
+    database_statistics = {
+        "num_exp": number_experiments[0],
+        "num_tissue": number_tissues[0],
+        "num_cells": number_cells[0],
+        "num_ab": number_antibodies[0],
+        "num_targets": number_abTarget[0],
+        "num_clones": number_clones[0],
+        "avg_exp": float(avg_exp_per_ab[0])
+    }
+
+    return database_statistics
