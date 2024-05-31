@@ -351,9 +351,6 @@ def annotate_cells(IPD,
         IPD._cell_labels_filt_df = labels_df.copy(deep=True) # norm
         IPD._temp_labels = labels_df.copy(deep=True)
         
-        IPD.label_certainties = singleR_df
-        IPD._temp_certainties = singleR_df
-        
         print("Finished running SingleR.")
     else:
         raise Exception("Error. No RNA data found. Unable to annotate cells.")
