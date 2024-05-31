@@ -923,7 +923,7 @@ def _connect_db_experiment(specs_csv: str, IPD) -> int:
         specs_csv (str): name of csv file containing a spreadsheet with
             information about the experiment and antibodies
         IPD (ImmunoPhenoData object): object containing protein data, 
-            gene data, cell labels, and cell certainties
+            gene data, and cell labels
     
     Returns:
         id_result (int): the id of the experiment that was recently inserted
@@ -1053,7 +1053,7 @@ def _connect_db_antigen_expression(idExperiment: int,
         specs_csv (str): name of csv file containing a spreadsheet with
             information about the experiment and antibodies
         IPD (ImmunoPhenoData object): object containing protein data, 
-            gene data, cell labels, and cell certainties  
+            gene data, and cell labels
     """
     # Connect to database
     params = _config()
@@ -1209,7 +1209,7 @@ def _connect_db_cells(idExperiment: int,
         specs_csv (str): name of csv file containing a spreadsheet with
             information about the experiment and antibodies
         IPD (ImmunoPhenoData object): object containing protein data, 
-            gene data, cell labels, and cell certainties
+            gene data, and cell labels
     """
     # Connect to database
     params = _config()
@@ -1227,8 +1227,8 @@ def _connect_db_cells(idExperiment: int,
     if experiment_exists_result == 0:
         raise Exception("Error. idExperiment not found in database")
 
-    # Check if IPD contains cell labels and certainties
-    if IPD._cell_labels is None or IPD.label_certainties is None:
+    # Check if IPD contains cell labels
+    if IPD._cell_labels is None:
         raise Exception("Error. No cell labels found. Run annotate_cells() first.")
 
     if IPD._cell_labels is not None and IPD.labels is None:
@@ -1382,7 +1382,7 @@ def link_antigen(ab_id_pair: list,
         ab_id_pair (list[str, str]): antibody name and id. Ex: ['CD90', 'AB_123']
         idExperiment (int): the id of the experiment inserted in the database
         IPD (ImmunoPhenoData object): object containing protein data, 
-            gene data, cell labels, and cell certainties  
+            gene data, and cell labels
     """
     # Connect to database
     params = _config()
@@ -1481,7 +1481,7 @@ def load_csv_database(IPD):
         specs_csv (str): name of csv file containing a spreadsheet with
             information about the experiment and antibodies
         IPD (ImmunoPhenoData object): object containing protein data, 
-            gene data, cell labels, and cell certainties 
+            gene data, and cell labels
     """
     
     # Create tables and procedures
