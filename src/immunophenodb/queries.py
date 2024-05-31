@@ -840,7 +840,7 @@ def _connect_db_antibody(specs_csv: str, IPD):
                 continue
             else:
                 # First check if this antibody is completely background       
-                all_bg = all(x == 0 for x in (IPD.classified_filt.loc[:, ab_id_pair[0]]))
+                all_bg = all(x == 0 for x in (IPD._classified_filt_df.loc[:, ab_id_pair[0]]))
                 if all_bg:
                     # Skip this antibody
                     errors.append((ab_id_pair[0], ab_id_pair[1], f'Antibody {ab_id_pair[0]} only contains background expression.'))
@@ -1067,7 +1067,7 @@ def _connect_db_antigen_expression(idExperiment: int,
     ab_lookup = _ab_dict(specs_csv)
 
     raw_counts = IPD.protein
-    classified_counts = IPD.classified_filt
+    classified_counts = IPD._classified_filt_df
     normalized_counts = IPD.normalized_counts
 
     num_antibodies = len(normalized_counts.columns)
@@ -1085,7 +1085,7 @@ def _connect_db_antigen_expression(idExperiment: int,
             ab_id = ab_lookup[ab]
 
             # First check if this antibody is completely background       
-            all_bg = all(x == 0 for x in (IPD.classified_filt.loc[:, ab]))
+            all_bg = all(x == 0 for x in (IPD._classified_filt_df.loc[:, ab]))
             if all_bg:
                 # Skip this antibody
                 errors.append((ab, ab_id, 'Antibody contains only background expression.'))
@@ -1396,7 +1396,7 @@ def link_antigen(ab_id_pair: list,
     ab_id = ab_id_pair[1]
 
     raw_counts = IPD.protein
-    classified_counts = IPD.classified_filt
+    classified_counts = IPD._classified_filt_df
     normalized_counts = IPD.normalized_counts
     num_cells = len(normalized_counts.index)
 
