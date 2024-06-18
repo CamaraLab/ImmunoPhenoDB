@@ -3111,8 +3111,9 @@ def format_reference_table(entire_reference_table: pd.DataFrame,
     
     return filtered_df
 
-def downsample(entire_reference_table: pd.DataFrame, 
-               size: int = 50) -> pd.DataFrame:
+def downsample(entire_reference_table: pd.DataFrame,
+               table_size: int = 10000,
+               population_size: int = 50) -> pd.DataFrame:
     """
     Downsamples the large reference table to 10,000 rows (cells). 
     Performs downsampling in a controlled randomized order, where
@@ -3122,7 +3123,8 @@ def downsample(entire_reference_table: pd.DataFrame,
     Parameters:
         entire_reference_table (pd.DataFrame): original large table
             containing all cells for the given antibodies
-        size (int): the minimum number of cells needed to define 
+        table_size (int): the number of rows to downsample/return
+        population_size (int): the minimum number of cells needed to define 
             a cell type population
     
     Returns:
@@ -3133,7 +3135,7 @@ def downsample(entire_reference_table: pd.DataFrame,
     total_num_cells = len(entire_reference_table.index)
     
     # Downsample if number of rows exceeds 10,000
-    if total_num_cells <= 10000:
+    if total_num_cells <= table_size:
         return entire_reference_table
     else:
         cells_to_keep = []
@@ -3151,12 +3153,12 @@ def downsample(entire_reference_table: pd.DataFrame,
             num_idCL_cells = len(list_of_cells)
 
             # Calculate an adjusted sample_amount for each idCL population to choose from
-            sample_amount = ((num_idCL_cells)/(total_num_cells)) * 10000
+            sample_amount = ((num_idCL_cells)/(total_num_cells)) * table_size
 
             # Round up the sample amount
             sample_amount_rounded_up = math.ceil(sample_amount)
             
-            if sample_amount_rounded_up > size:
+            if sample_amount_rounded_up > population_size:
                 # Randomly sample this number of cells from this idCL population
                 sampled_population_index = sample(list_of_cells, sample_amount_rounded_up)
 
@@ -3171,9 +3173,9 @@ def downsample(entire_reference_table: pd.DataFrame,
                 
             else:
                 # If the sample amount was below our threshold, take 50 of the cells remaining
-                if num_idCL_cells > size:
+                if num_idCL_cells > population_size:
                     # Take 50 of these cells
-                    smaller_sampled_population_index = sample(list_of_cells, size)
+                    smaller_sampled_population_index = sample(list_of_cells, population_size)
 
                     # Add these cells to cells_to_keep
                     cells_to_keep.extend(smaller_sampled_population_index)
@@ -3197,8 +3199,8 @@ def downsample(entire_reference_table: pd.DataFrame,
                     # Add this to combined_dfs
                     combined_dfs.append(temp_df)
 
-        if len(cells_to_keep) > 10000:
-            reduced_cells_to_keep = sample(cells_to_keep, 10000)
+        if len(cells_to_keep) > table_size:
+            reduced_cells_to_keep = sample(cells_to_keep, table_size)
             return entire_reference_table.loc[pd.Index(reduced_cells_to_keep)]
         else:
             return entire_reference_table.loc[pd.Index(cells_to_keep)]
@@ -3311,7 +3313,9 @@ def downsample_reference_table(antibody_pairs: list,
     renamed_format_df = format_df.rename(columns=antibodies_dict, inplace=False)
                                    
     # Downsample to 10k cells
-    downsampled_df = downsample(renamed_format_df, size=population_size)
+    downsampled_df = downsample(renamed_format_df, 
+                                table_size=10000, 
+                                population_size=population_size)
 
     # Remove any rows or columns that are all 0s or NAs
     clean_downsampled_df = remove_all_zeros_or_na(downsampled_df)
