@@ -825,7 +825,7 @@ def _connect_db_antibody(specs_csv: str, IPD):
     # Read all antibodies from csv file ('CD90', 'AB_123')
     antibodies = _read_antibodies(specs_csv)
 
-    with _tqdm_output(tqdm(antibodies, total=len(IPD.protein.columns))) as tqdm_ab:
+    with _tqdm_output(tqdm(antibodies, total=len(antibodies))) as tqdm_ab:
         for ab_id_pair in tqdm_ab:
             # CHECK: Does this antibody id exist in the database?
             check_ab_exists_query = """SELECT COUNT(*)
