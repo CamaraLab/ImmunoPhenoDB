@@ -1081,6 +1081,12 @@ def _connect_db_antigen_expression(idExperiment: int,
         cells_map = _experiment_idCell_map(idExperiment)
 
         for ab, counts in tqdm_normalized:
+            # Check if antibody exists in spreadsheet. If not, then skip the upload of this antibody
+            if ab not in ab_lookup:
+                errors.append((ab, 'Antibody is not found in the spreadsheet.'))
+                logging.warning(f"Skipping {ab}. Refer to antigen_errors.txt")
+                continue # Move onto the next antibody
+
             # Get the corresponding antibody id for this antibody
             ab_id = ab_lookup[ab]
 
