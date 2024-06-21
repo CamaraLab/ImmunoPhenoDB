@@ -143,8 +143,8 @@ def _ab_dict(specs_csv: str) -> dict:
 
     for ab in antibodies:
         # Hard code this in for now. Removes -1 from antibodies in the spreadsheet
-        new_ab = ab[0].removesuffix("-1")
-        ab_dict[new_ab] = ab[1]
+        # new_ab = ab[0].removesuffix("-1")
+        ab_dict[ab] = ab[1]
         # ab_dict[ab[0]] = ab[1]
 
     return ab_dict
