@@ -11,7 +11,8 @@ import {idCLs,
         whichExperiments,
         stveaReference,
         convertCellType,
-        databaseStatistics } from '../controllers/db_calls.js'
+        databaseStatistics,
+        antibodyPanelReference } from '../controllers/db_calls.js'
 
 
 const router : Router = express.Router()
@@ -30,6 +31,7 @@ router.post('/whichcelltypes', whichCellTypes)
 router.post('/whichexperiments', whichExperiments)
 router.post('/stveareference', stveaReference)
 router.post('/convertcelltype', convertCellType)
+router.post('/antibodypanelreference', antibodyPanelReference)
 
 // module.exports = router;
 export default router

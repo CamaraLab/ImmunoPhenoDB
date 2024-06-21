@@ -235,6 +235,19 @@ export const stveaReference = async (req: Request, res: Response) => {
     }
 }
 
+export const antibodyPanelReference = async (req: Request, res: Response) => {
+    try {
+        console.log("antibodyPanelReference recieved from client:", req.body)
+        const flask_antibody_panel_Reference = await axios.post(`${system_URL}/antibodypanelreference`, req.body)
+        res.status(200).send(flask_antibody_panel_Reference.data)
+    }
+    catch (error) {
+        if (error) {
+            console.log(error)
+            res.status(400).send("Bad request. Error with antibodyPanelReference computation.")
+        }
+    }
+} 
 
 export const convertCellType = async (req: Request, res: Response) => {
     console.log("we entered convertCellType")
