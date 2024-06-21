@@ -20,7 +20,8 @@ from .engine import (
     which_experiments,
     get_tissues,
     downsample_reference_table,
-    database_statistics
+    database_statistics,
+    antibody_panel_reference_table
 )
 
 @app.route('/idcls', methods=['GET'])
@@ -211,13 +212,30 @@ def stveareference():
                                            parse_option=parse_option,
                                            population_size=population_size)
     result_json = result_df.to_json()
-
     return result_json
 
 @app.route("/databasestatistics", methods=['GET'])
 def databasestatistics():
     stats_json = database_statistics()
     return stats_json
+
+@app.route("/antibodypanelreference", methods=['POST'])
+def antibodypanelreference():
+    res_dict = request.json
+    print("antibodypanelreference dict:", res_dict)
+    target_idcl = res_dict["target_idcl"]
+    target_idbto = res_dict["target_idbto"]
+    background_idcl = res_dict["background_idcl"]
+    background_idbto = res_dict["background_idbto"]
+    experiment = res_dict["experiment"]
+
+    result_df = antibody_panel_reference_table(unique_target_family_idCLs=target_idcl,
+                                               final_target_idBTOs=target_idbto,
+                                               modified_background_family_idCLs=background_idcl,
+                                               final_background_idBTOs=background_idbto,
+                                               experiment=experiment)
+    result_json = result_df.to_json()
+    return result_json
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000)
