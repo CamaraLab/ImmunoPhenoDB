@@ -781,27 +781,25 @@ def extra_ab_info(ab_id: str) -> pd.DataFrame:
         final_df (pd.DataFrame): dataframe containing various
             information about an antibody (target, clonality, etc)
     """
-    encoding = urllib.parse.quote(ab_id, safe='', encoding=None, errors=None)
-    url = f"https://scicrunch.org/php/data-federation-csv.php?orMultiFacets=true&count=10000&nifid=nif-0000-07730-1&exportType=data&q={encoding}&offset=0"
+    res_json = _sci_crunch_hits(ab_id)["hits"]["hits"][0]
+
+    # Extract the values
+    ab_name = res_json['_source']['item']['name']
+    ab_target = res_json['_source']['antibodies']['primary'][0]['targets'][0]['name']
+    proper_citation = res_json['_source']['rrid']['properCitation']
+    comments = res_json['_source']['item']['notes'][0]['description']
+    catalog_num = res_json['_source']['vendors'][0]['catalogNumber']
+    vendor = res_json['_source']['vendors'][0]['name']
+
+    extra_info = {'ab_name': ab_name,
+                  'ab_target': ab_target,
+                  'proper_citation': proper_citation,
+                  'comments': comments,
+                  'vendor': vendor,
+                  'catalog_num': catalog_num
+                  }
     
-    raw_df = pd.read_csv(url)
-    
-    # Select columns to add to resulting dataframe
-    cols = ['id', 
-            'ab_name', 
-            'ab_target', 
-            'proper_citation', 
-            'clonality', 
-            'defining_citation', 
-            'comments', 
-            'clone_id', 
-            'target_species', 
-            'vendor', 
-            'catalog_num']
-    
-    final_df = raw_df[cols]
-    
-    return final_df
+    return extra_info
 
 def _connect_db_antibody(specs_csv: str, IPD):
     """
@@ -854,13 +852,13 @@ def _connect_db_antibody(specs_csv: str, IPD):
             try:
                 
                 # Make request to Antibody Registry for additional info
-                results_df = extra_ab_info(ab_id_pair[1])
-                ab_name = str(results_df.loc[0]['ab_name'])
-                ab_target = str(results_df.loc[0]['ab_target'])
-                citation = str(results_df.loc[0]['proper_citation'])
-                comments = str(results_df.loc[0]['comments'])
-                vendor = str(results_df.loc[0]['vendor'])
-                catalogNum = str(results_df.loc[0]['catalog_num']) # this will be a str varchar in db
+                results_json = extra_ab_info(ab_id_pair[1])
+                ab_name = str(results_json['ab_name'])
+                ab_target = str(results_json['ab_target'])
+                citation = str(results_json['proper_citation'])
+                comments = str(results_json['comments'])
+                vendor = str(results_json['vendor'])
+                catalogNum = str(results_json['catalog_num']) # this will be a str varchar in db
 
                 for hit_results in each_hit_results:
                     alias, clonalBool, host, uniprotID, cloneID, otherAliases = hit_results
@@ -1351,13 +1349,13 @@ def link_ab_uniprot(ab_id_pair: list,
             alias, clonalBool, host, uniprotID, cloneID, otherAliases = hit
 
             # Make request to Antibody Registry for additional info
-            results_df = extra_ab_info(ab_id_pair[1])
-            ab_name = str(results_df.loc[0]['ab_name'])
-            ab_target = str(results_df.loc[0]['ab_target'])
-            citation = str(results_df.loc[0]['proper_citation'])
-            comments = str(results_df.loc[0]['comments'])
-            vendor = str(results_df.loc[0]['vendor'])
-            catalogNum = str(results_df.loc[0]['catalog_num']) # this will be a str varchar in db
+            results_json = extra_ab_info(ab_id_pair[1])
+            ab_name = str(results_json['ab_name'])
+            ab_target = str(results_json['ab_target'])
+            citation = str(results_json['proper_citation'])
+            comments = str(results_json['comments'])
+            vendor = str(results_json['vendor'])
+            catalogNum = str(results_json['catalog_num']) # this will be a str varchar in db
 
             print(f"Manually inserting {ab_id_pair[0]}...")
             cursor.callproc('insert_antibody', 
