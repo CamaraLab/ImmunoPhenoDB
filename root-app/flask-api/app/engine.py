@@ -3385,6 +3385,13 @@ def database_statistics():
 
     return database_statistics
 
+def execute_query(query_params):
+    query, parameters, conn_params = query_params
+    conn = mysql.connector.connect(**conn_params)
+    result = pd.read_sql(sql=query, params=parameters, con=conn)
+    conn.close()
+    return result
+
 def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
                                    final_target_idBTOs: list = None,
                                    modified_background_family_idCLs: list = None,
@@ -3407,8 +3414,8 @@ def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
                     INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment 
                     INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
                     INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
-                    INNER JOIN tissues on experiments.idBTO = tissues.idBTO"""
-    
+                    INNER JOIN tissues ON experiments.idBTO = tissues.idBTO"""
+
     target_where_clauses = []
     target_parameters = []
     background_where_clauses = []
@@ -3418,7 +3425,7 @@ def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
 
     if unique_target_family_idCLs is not None and len(unique_target_family_idCLs) > 0:
         idCL_placeholders = ','.join(['%s'] * len(unique_target_family_idCLs))
-        target_where_clauses.append(f"cells.idCL IN ({idCL_placeholders})")
+        target_where_clauses.append(f"idCL IN ({idCL_placeholders})")
         target_parameters.extend(unique_target_family_idCLs)
 
     if final_target_idBTOs is not None and len(final_target_idBTOs) > 0:
@@ -3428,7 +3435,7 @@ def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
 
     if modified_background_family_idCLs is not None and len(modified_background_family_idCLs) > 0:
         idCL_placeholders = ','.join(['%s'] * len(modified_background_family_idCLs))
-        background_where_clauses.append(f"cells.idCL IN ({idCL_placeholders})")
+        background_where_clauses.append(f"idCL IN ({idCL_placeholders})")
         background_parameters.extend(modified_background_family_idCLs)
 
     if final_background_idBTOs is not None and len(final_background_idBTOs) > 0:
@@ -3438,14 +3445,62 @@ def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
 
     if experiment is not None and len(experiment) > 0:
         experiment_placeholders = ','.join(['%s'] * len(experiment))
-        experiment_where_clauses.append(f"cells.idExperiment IN ({experiment_placeholders})")
+        experiment_where_clauses.append(f"antigen_expression.idExperiment IN ({experiment_placeholders})")
         experiment_parameters.extend(experiment)
 
     target_table = pd.DataFrame()
     background_table = pd.DataFrame()
-        
-    # Running the Queries
-    # Run the target query first
+
+    if target_where_clauses and background_where_clauses:
+        target_where_clauses_together = " WHERE " + " AND ".join(target_where_clauses)
+        target_query = base_query + target_where_clauses_together
+        if experiment_where_clauses:
+            exp_where_clauses_together = " AND " + experiment_where_clauses[0]
+            target_query += exp_where_clauses_together
+            target_parameters.extend(experiment_parameters)
+
+        background_where_clauses_together = " WHERE " + " AND ".join(background_where_clauses)
+        background_query = base_query + background_where_clauses_together
+        if experiment_where_clauses:
+            exp_where_clauses_together = " AND " + experiment_where_clauses[0]
+            background_query += exp_where_clauses_together
+            background_parameters.extend(experiment_parameters)
+
+        query_params_list = [
+            (target_query, target_parameters, params),
+            (background_query, background_parameters, params)
+        ]
+
+        with multiprocessing.Pool(processes=2) as pool:
+            results = pool.map(execute_query, query_params_list)
+
+        target_table = results[0]
+        background_table = results[1]
+
+        # Get all unique "idCell" values from target_table
+        idCell_in_target_table = target_table['idCell'].unique()
+        # Filter background to keep only rows where "idCell" is not found in A
+        filtered_background = background_table[~background_table['idCell'].isin(idCell_in_target_table)]
+
+        ds_background = downsample(format_reference_table(filtered_background), table_size=10000)
+        ds_background["background"] = True
+        print("Part 1: ds_background")
+        print(ds_background)
+
+        ds_target = downsample(format_reference_table(target_table), table_size=10000)
+        ds_target["background"] = False
+        print("Part 2: ds_target")
+        print(ds_target)
+
+        combined_df = pd.concat([ds_target, ds_background], axis=0, ignore_index=False)
+        columns = [col for col in combined_df.columns if col not in ['idCL', 'idExperiment', 'background']]
+        columns += ['idCL', 'idExperiment', 'background']
+        combined_df = combined_df[columns]
+        print("Part 3: combined_df")
+        print(combined_df)
+
+        return combined_df
+
     if target_where_clauses:
         target_where_clauses_together = " WHERE " + " AND ".join(target_where_clauses)
         target_query = base_query + target_where_clauses_together
@@ -3454,49 +3509,11 @@ def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
             target_query += exp_where_clauses_together
             target_parameters.extend(experiment_parameters)
 
-        target_table = pd.read_sql(sql=target_query, params=target_parameters, con=conn)
-        
-        # ONLY run the background query if there are actually values there
-        if background_where_clauses:
-            background_where_clauses_together = " WHERE " + " AND ".join(background_where_clauses)
-            background_query = base_query + background_where_clauses_together
-            if experiment_where_clauses:
-                exp_where_clauses_together = " AND " + experiment_where_clauses[0]
-                background_query += exp_where_clauses_together
-                background_parameters.extend(experiment_parameters)
-            
-            background_table = pd.read_sql(sql=background_query, params=background_parameters, con=conn)
-    
-            # Get all unique "idCell" values from target_table
-            idCell_in_target_table = target_table['idCell'].unique()
-            # Filter background to keep only rows where "idCell" is not found in A
-            filtered_background = background_table[~background_table['idCell'].isin(idCell_in_target_table)]
+        target_table = pd.read_sql(sql=target_query, params=target_parameters, con=mysql.connector.connect(**params))
 
-            # If background is provided, downsample target and background to 5000 each
-            ds_background = downsample(format_reference_table(filtered_background), table_size=10000)
-            ds_background["background"] = True
-            print("Part 1: ds_background")
-            print(ds_background)
+        ds_target = downsample(format_reference_table(target_table), table_size=20000)
+        ds_target["background"] = False
+        print("Target only:")
+        print(ds_target)
 
-            ds_target = downsample(format_reference_table(target_table), table_size=10000)
-            ds_target["background"] = False
-            print("Part 2: ds_target")
-            print(ds_target)
-    
-            # Combine both tables
-            combined_df = pd.concat([ds_target, ds_background], axis=0, ignore_index=False)
-            columns = [col for col in combined_df.columns if col not in ['idCL', 'idExperiment', 'background']]
-            columns += ['idCL', 'idExperiment', 'background']
-            combined_df = combined_df[columns]
-            print("Part 3: combined_df")
-            print(combined_df)
-        
-            return combined_df
-        else:
-            # If it's just the target, then downsample to 10k
-            ds_target = downsample(format_reference_table(target_table), table_size=20000)
-            ds_target["background"] = False
-            print("Only ds_target")
-            print(ds_target)
-            
-            return ds_target
+        return ds_target
