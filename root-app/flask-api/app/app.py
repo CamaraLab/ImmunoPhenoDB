@@ -21,7 +21,11 @@ from .engine import (
     get_tissues,
     downsample_reference_table,
     database_statistics,
-    antibody_panel_reference_table
+    antibody_panel_reference_table,
+    get_antibodies_web,
+    plot_antibodies_web,
+    get_celltypes_web,
+    plot_celltypes_web
 )
 
 @app.route('/idcls', methods=['GET'])
@@ -214,12 +218,12 @@ def stveareference():
     result_json = result_df.to_json()
     return result_json
 
-@app.route("/databasestatistics", methods=['GET'])
+@app.route('/databasestatistics', methods=['GET'])
 def databasestatistics():
     stats_json = database_statistics()
     return stats_json
 
-@app.route("/antibodypanelreference", methods=['POST'])
+@app.route('/antibodypanelreference', methods=['POST'])
 def antibodypanelreference():
     res_dict = request.json
     print("antibodypanelreference dict:", res_dict)
@@ -236,6 +240,72 @@ def antibodypanelreference():
                                                experiment=experiment)
     result_json = result_df.to_json()
     return result_json
+
+# Website functions
+@app.route('/findabsweb', methods=['POST'])
+def findabsweb():
+    # JSON payload needs to contain idCLs and idBTO
+    res_dict = request.json
+
+    idCL_query_list = res_dict['idCL']
+    idBTO_query_list = res_dict['idBTO']
+
+    result_df = get_antibodies_web(idCLs=idCL_query_list,
+                                   idBTO=idBTO_query_list)
+    
+    # Check if an error string was produced
+    if isinstance(result_df, str):
+        return result_df
+    else:
+        # If no error, convert the dataframe into a JSON to send over network
+        result_json = result_df.to_json()
+        return result_json
+
+@app.route('/plotabsweb', methods=['POST'])
+def plotabsweb():
+    # JSON payload needs ab_ids and id_CLs. ab_ids is ideally retrieved from findabsweb
+    # from a separate API call in the frontend
+    res_dict = request.json
+
+    ab_ids = res_dict['abs']
+    id_CLs = res_dict['idcls']
+    
+    result_df = plot_antibodies_web(ab_ids=ab_ids,
+                                    id_CLs=id_CLs)
+    
+    return result_df.to_json()
+
+@app.route('/findcelltypesweb', methods=['POST'])
+def findcelltypesweb():
+    # JSON payload needs ab_ids and idBTO
+    res_dict = request.json
+
+    ab_query_list = res_dict['ab']
+    idBTO_query_list = res_dict['idBTO']
+
+    result_dict = get_celltypes_web(ab_ids=ab_query_list,
+                                  idBTO=idBTO_query_list)
+    
+    # Check if an error string was produced
+    if isinstance(result_dict, str):
+        return result_dict
+    else:
+        dict_of_dfs = nested_dicts(copy.deepcopy(result_dict))
+        return dict_of_dfs
+
+
+@app.route('/plotcelltypesweb', methods=['POST'])
+def plotcelltypesweb():
+    # JSON payload needs one ab_id and id_CLs
+    res_dict = request.json
+
+    ab_id = res_dict['ab']
+    id_CLs = res_dict['idcls']
+    
+    result_df = plot_celltypes_web(ab_id=ab_id,
+                                   id_CLs=id_CLs)
+    
+    return result_df.to_json()
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000)

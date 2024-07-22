@@ -1,5 +1,6 @@
 import warnings
 import logging
+import time
 
 import configparser
 import mysql.connector # mysql-connector-python
@@ -3517,3 +3518,207 @@ def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
         print(ds_target)
 
         return ds_target
+
+#------------------------ Functions for get_antibodies_web ------------------------#
+def subgraph(G: nx.DiGraph, 
+             nodes: list, 
+             root: str ='CL:0000000')-> nx.DiGraph:
+    """
+    Constructs a subgraph from a larger graph based on 
+    a provided list of leaf nodes
+
+    Considers cell types as the leaf nodes of the subgraph when
+    finding the most common ancestor (root node)
+
+    Parameters:
+        G (nx.DiGraph): "Master" directed acylic graph containing all 
+            possible cell ontology relationships
+        nodes (list): cell ontologies of interest - leaf nodes of the graph 
+        root (str): root node of the graph
+
+    Returns:
+        subgraph (nx.DiGraph): subgraph containing cell ontology relationships
+            for only the nodes provided
+    """
+    if root in nodes:
+        raise Exception("Error. Root node cannot be a target node")
+    
+    node_unions = []
+    for node in nodes:
+        # For each node in the list, get all of their paths from the root
+        node_paths = [set(path) for path in nx.all_simple_paths(G, source=root, target=node)]
+        
+        if len(node_paths) == 0:
+            raise Exception("No paths found. Please enter valid target nodes")
+        
+        # Then, take the union of those paths to return all possible nodes visited. Store this result in node_unions
+        node_union = set.union(*node_paths)
+        # Then, add this to a list (node_unions) containing each node's union 
+        node_unions.append(node_union)
+
+    # Find a common path by taking the intersection of all unions
+    union_inter = set.intersection(*node_unions)
+
+    node_path_lengths = {}
+    # Find the distance from each node in union_inter to the root
+    for node in union_inter:
+        length = nx.shortest_path_length(G, source=root, target=node)
+        node_path_lengths[node] = length
+
+    # Get node(s) with the largest path length. This is the lowest common ancestor of [nodes]
+    max_value = max(node_path_lengths.values())
+    all_LCA = [k for k,v in node_path_lengths.items() if v == max_value]
+    
+    # Reconstruct a subgraph (DiGraph) from LCA to each node by finding the shortest path
+    nodes_union_sps = []
+    # for each LCA, reconstruct their graph
+    for LCA in all_LCA:
+        for node in nodes:
+            node_paths = [set(path) for path in nx.all_simple_paths(G, source=LCA, target=node)]
+            
+            # If target node happens to be a LCA, the node path will be empty
+            # skip it
+            if len(node_paths) == 0:
+                continue
+
+            node_union = set.union(*node_paths)
+
+            # instead, take ALL the paths, and then union of all of those paths
+            nodes_union_sps.append(node_union)
+
+    # Take the union of these paths (from each LCA) to return all nodes in the subgraph
+    subgraph_nodes = set.union(*nodes_union_sps)
+   
+    # Create a subgraph
+    subgraph = G.subgraph(subgraph_nodes)
+
+    return subgraph
+
+def find_descendants(idCLs: list) -> dict:
+    node_fam_dict = {}
+
+    # Load in pickled NetworkX graph of the OWL database
+    with open('/app/app/cl_2024_05_15_owl_pickle', 'rb') as sample:
+        G = pickle.load(sample)
+
+    # G = pickle.load(open('/app/app/cl_2024_05_15_owl_pickle', 'rb'))
+    G_graph = G.graph
+
+    # Get idCLs in the database 
+    db_idCLs = get_unique_idCLs()
+
+    # Create a subgraph using the idCLs currently in the database
+    G_subgraph = subgraph(G_graph, db_idCLs)
+
+    for idCL in idCLs:
+        node_family = []
+        descendants = nx.descendants(G_subgraph, idCL)
+        node_family.extend(list(set(descendants)))
+        node_fam_dict[idCL] = node_family
+
+    return node_fam_dict
+
+def get_antibodies_web(idCLs: list,
+                       idBTO: list = None) -> pd.DataFrame:
+    
+    start = time.time()
+    # Get idCLs and find descendants
+    node_fam_dict = find_descendants(idCLs)
+
+    # Call Spark to get results
+    results_table = get_antibodies(node_fam_dict=node_fam_dict, 
+                                   idBTO=idBTO)
+    end = time.time()
+    print("get_antibodies_web time:", end-start)
+
+    return results_table
+
+#------------------------ Functions for plot_antibodies_web ------------------------#
+def plot_antibodies_web(ab_ids: list, 
+                        id_CLs: list) -> pd.DataFrame:
+    warnings.filterwarnings('ignore')
+    
+    params = _config()
+    conn = mysql.connector.connect(**params)
+  
+    # Dynamically generate placeholders for parameterized query
+    ab_placeholders = ','.join(['%s'] * len(ab_ids))
+    idCL_placeholders = ','.join(['%s'] * len(id_CLs)) # find descendants on client first, then send them here
+    
+    with_query = """SELECT cells.idCell, 
+                        cells.idCellOriginal,
+                        antigen_expression.normValue,
+                        cells.idExperiment,
+                        CONCAT(antibodies.idAntibody, ' (', antibodies.abTarget, ')') AS idAntibody,
+                        cells.idCL
+                    FROM cells
+                    INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+                    INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+                    WHERE cells.idCell IN (
+                        SELECT antigen_expression.idCell
+                        FROM antigen_expression 
+                        WHERE antigen_expression.idAntibody IN (%s)
+                    ) AND cells.idCL IN (%s)
+                        AND antigen_expression.idAntibody IN (%s);"""  % (ab_placeholders, idCL_placeholders, ab_placeholders)
+
+    parameters = ab_ids.copy()
+    parameters.extend(id_CLs)
+    parameters.extend(ab_ids)
+    
+    cells_with_idCL_df = pd.read_sql(sql=with_query, params=parameters, con=conn)
+
+    grouped_normvalue_by_antibody = group_normvalue("idAntibody", cells_with_idCL_df)
+
+    summary_stats = summary_statistics("idAntibody", grouped_normvalue_by_antibody)
+    
+    if conn is not None:
+        conn.close()
+    
+    return summary_stats
+
+#------------------------ Functions for get_celltypes_web ------------------------#
+def get_celltypes_web(ab_ids: list,
+                      idBTO: list = None) -> dict:
+    start = time.time()
+    # Call Spark to get results
+    results_table = get_celltypes(ab_ids=ab_ids,
+                                  idBTO=idBTO)
+    end = time.time()
+    print("get_celltypes_web time:", end-start)
+
+    return results_table
+
+#------------------------ Functions for plot_celltypes_web ------------------------#
+def plot_celltypes_web(ab_id: str, 
+                       id_CLs: list) -> pd.DataFrame:
+    warnings.filterwarnings('ignore')
+    
+    params = _config()
+    conn = mysql.connector.connect(**params)
+    
+    idCL_placeholders = ','.join(['%s'] * len(id_CLs))
+    
+    with_idCL_query = """SELECT cells.idCell, 
+                            cells.idCellOriginal, 
+                            antigen_expression.normValue, 
+                            cells.idExperiment, 
+                            antigen_expression.idAntibody, 
+                            CONCAT(cell_types.label, ' (', cells.idCL, ')') AS idCL
+                        FROM antigen_expression
+                        INNER JOIN cells ON antigen_expression.idCell = cells.idCell
+                        INNER JOIN cell_types ON cells.idCL = cell_types.idCL
+                        WHERE antigen_expression.idAntibody = (%s)
+                        AND cells.idCL IN (%s);""" % ('%s', idCL_placeholders)
+
+    parameters = [ab_id]
+    parameters.extend(id_CLs)
+    
+    cells_with_idCL_df = pd.read_sql(sql=with_idCL_query, params=parameters, con=conn)
+
+    grouped_normvalue_by_celltype = group_normvalue("idCL", cells_with_idCL_df)
+    summary_stats = summary_statistics("idCL", grouped_normvalue_by_celltype)
+
+    if conn is not None:
+        conn.close()
+        
+    return summary_stats
