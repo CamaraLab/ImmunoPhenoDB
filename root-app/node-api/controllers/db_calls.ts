@@ -327,3 +327,64 @@ export const convertCellType = async (req: Request, res: Response) => {
       }
 
 }
+
+// Endpoints for website
+export const findAbsWeb = async (req: Request, res: Response) => {
+    try {
+        console.log("findAbsWeb recieved from client:", req.body)
+        const flask_abs_web = await axios.post(`${system_URL}/findabsweb`, req.body)
+        console.log("findAbsWeb final result:", flask_abs_web)
+        res.status(200).send(flask_abs_web.data)
+    }
+    catch (error) {
+        if (error) {
+            console.log(error)
+            res.status(400).send("Bad request. Error with findAbsWeb computation.")
+        }
+    }
+}
+
+export const plotAbsWeb = async (req: Request, res: Response) => {
+    try {
+        console.log("plotAbsWeb recieved from client:", req.body)
+        const plot_abs_web = await axios.post(`${system_URL}/plotabsweb`, req.body)
+        console.log("plotAbsWeb final result:", plot_abs_web)
+        res.status(200).send(plot_abs_web.data)
+    }
+    catch (error) {
+        if (error) {
+            console.log(error)
+            res.status(400).send("Bad request. Error with plotAbsWeb computation.")
+        }
+    }
+}
+
+export const findCellTypesWeb = async (req: any, res: any) => {
+    try {
+        console.log("findCellTypesWeb recieved from client:", req.body)
+        const flask_celltypes_web = await axios.post(`${system_URL}/findcelltypesweb`, req.body)
+        console.log("findCellTypesWeb final result:", flask_celltypes_web)
+        res.status(200).send(flask_celltypes_web.data)
+    }
+    catch (error) {
+        if (error) {
+            console.log(error)
+            res.status(400).send("Bad request. Error with findCellTypes computation.")
+        }
+    }
+}
+
+export const plotCellTypesWeb = async (req: any, res: any) => {
+    try {
+        console.log("plotCellTypesWeb recieved from client", req.body)
+        const flask_plotcelltypes_web = await axios.post(`${system_URL}/plotcelltypesweb`, req.body)
+        console.log("plotCellTypesWeb final result:", flask_plotcelltypes_web)
+        res.status(200).send(flask_plotcelltypes_web.data)
+    }
+    catch (error) {
+        if (error) {
+            console.log(error)
+            res.status(400).send("Bad request. Error with plotCellTypes computation.")
+        }
+    }
+}
