@@ -1,4 +1,5 @@
 import pandas as pd
+from pandas import SparseDtype
 import logging
 from importlib.resources import files
 
@@ -291,7 +292,7 @@ def singleR_parallel(rna, chunk_size=20000, partition_size=2000):
         # Check if all columns in section are sparse. If so, convert to dense
         all_types = rna.iloc[section[0] : section[1]].dtypes
 
-        if all(isinstance(t, pd.core.arrays.sparse.dtype.SparseDtype) for t in all_types):
+        if all(isinstance(t, SparseDtype) for t in all_types):
             cells_batch = rna.iloc[section[0] : section[1]].sparse.to_dense()
         # Otherwise, use default dataframe which is not sparse
         else:
