@@ -3636,6 +3636,13 @@ def get_antibodies_web(idCLs: list,
 #------------------------ Functions for plot_antibodies_web ------------------------#
 def plot_antibodies_web(ab_ids: list, 
                         id_CLs: list) -> pd.DataFrame:
+    # Need to find descendants of the provided idCLs here if calling from website
+    # Can't find descendants on client first 
+    node_fam_dict = find_descendants(id_CLs)
+    target_parents = list(node_fam_dict.keys())
+    target_children = [item for sublist in list(node_fam_dict.values()) for item in sublist]
+    target_family = target_parents + target_children
+
     warnings.filterwarnings('ignore')
     
     params = _config()
@@ -3643,7 +3650,7 @@ def plot_antibodies_web(ab_ids: list,
   
     # Dynamically generate placeholders for parameterized query
     ab_placeholders = ','.join(['%s'] * len(ab_ids))
-    idCL_placeholders = ','.join(['%s'] * len(id_CLs)) # find descendants on client first, then send them here
+    idCL_placeholders = ','.join(['%s'] * len(target_family)) # find descendants on client first, then send them here
     
     with_query = """SELECT cells.idCell, 
                         cells.idCellOriginal,
@@ -3662,7 +3669,7 @@ def plot_antibodies_web(ab_ids: list,
                         AND antigen_expression.idAntibody IN (%s);"""  % (ab_placeholders, idCL_placeholders, ab_placeholders)
 
     parameters = ab_ids.copy()
-    parameters.extend(id_CLs)
+    parameters.extend(target_family)
     parameters.extend(ab_ids)
     
     cells_with_idCL_df = pd.read_sql(sql=with_query, params=parameters, con=conn)
