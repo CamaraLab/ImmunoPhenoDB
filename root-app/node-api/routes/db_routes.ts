@@ -1,6 +1,7 @@
 import express, { Express, Router, Request, Response } from 'express'
 import {idCLs, 
         tissues,
+        experiments,
         findAbs, 
         plotAbs, 
         findCellTypes, 
@@ -23,6 +24,7 @@ const router : Router = express.Router()
 
 router.get('/idcls', idCLs)
 router.get('/tissues', tissues)
+router.get('/experiments', experiments)
 router.get('/databasestatistics', databaseStatistics)
 
 router.post('/findabs', findAbs)
