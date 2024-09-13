@@ -86,6 +86,20 @@ export const tissues = async(req: any, res: Response) => {
     }
 }
 
+export const experiments = async(req: any, res: Response) => {
+    try{
+        const flask_experiments = await axios.get(`${system_URL}/experiments`)
+        console.log("experiments:", flask_experiments)
+        res.status(200).send(flask_experiments.data)
+    }
+    catch (error) {
+        if (error) {
+            console.log(error)
+            res.status(400).send("Bad request. Errors with experiments server request.")
+        }
+    }
+}
+
 export const databaseStatistics = async(req: any, res: Response) => {
     try{
         const flask_databaseStatistics = await axios.get(`${system_URL}/databasestatistics`)
