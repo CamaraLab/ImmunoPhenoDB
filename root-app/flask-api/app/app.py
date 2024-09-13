@@ -25,7 +25,8 @@ from .engine import (
     get_antibodies_web,
     plot_antibodies_web,
     get_celltypes_web,
-    plot_celltypes_web
+    plot_celltypes_web,
+    get_experiments
 )
 
 @app.route('/idcls', methods=['GET'])
@@ -83,8 +84,12 @@ def nested_dicts(d):
     for k, v in d.items():
         if isinstance(v, pd.DataFrame):
             d[k] = v.to_json()
-        else:
+        elif isinstance(v, dict):  # If the value is a nested dictionary, recursively apply the function
             d[k] = nested_dicts(v)
+        elif isinstance(v, str):  # If the value is a string, leave it as is
+            d[k] = v
+        else:
+            raise TypeError(f"Unsupported type for key {k}: {type(v)}")
     return d
 
 @app.route('/findcelltypes', methods=['POST'])
@@ -106,6 +111,8 @@ def findcelltypes():
     result_dict = get_celltypes(ab_ids=antibodies, 
                                 idBTO=idBTO_filter, 
                                 idExperiment=idExp_filter)
+    
+    print("findcelltypes result_dict:", result_dict, type(result_dict))
     
     if isinstance(result_dict, str):
         return result_dict
@@ -232,12 +239,14 @@ def antibodypanelreference():
     background_idcl = res_dict["background_idcl"]
     background_idbto = res_dict["background_idbto"]
     experiment = res_dict["experiment"]
+    seed = res_dict["seed"]
 
     result_df = antibody_panel_reference_table(unique_target_family_idCLs=target_idcl,
                                                final_target_idBTOs=target_idbto,
                                                modified_background_family_idCLs=background_idcl,
                                                final_background_idBTOs=background_idbto,
-                                               experiment=experiment)
+                                               experiment=experiment,
+                                               seed=seed)
     result_json = result_df.to_json()
     return result_json
 
@@ -286,6 +295,8 @@ def findcelltypesweb():
     result_dict = get_celltypes_web(ab_ids=ab_query_list,
                                   idBTO=idBTO_query_list)
     
+    print("findcelltypesweb result_dict:", result_dict, type(result_dict))
+    
     # Check if an error string was produced
     if isinstance(result_dict, str):
         return result_dict
@@ -306,6 +317,11 @@ def plotcelltypesweb():
                                    id_CLs=id_CLs)
     
     return result_df.to_json()
+
+@app.route('/experiments', methods=['GET'])
+def experiments():
+    experiments_df = get_experiments()
+    return experiments_df.to_json()
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000)
