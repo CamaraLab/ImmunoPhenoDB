@@ -24,6 +24,7 @@ import pymysql
 # For STvEA
 import networkx as nx
 import numpy as np
+import random
 from random import sample
 import math
 import multiprocessing
@@ -1324,7 +1325,7 @@ def spark_query_cell_type_lmm(antibody_id: str, idCL: str) -> tuple:
         logging.warning(f"No cells found for type {idCL} in {antibody_id}. "
                        "Proportion will be set to NaN")
 
-    proportion_background = float(bg_df2["bg_cells"]/bg_df2["total_cells"])    
+    proportion_background = float(bg_df2["bg_cells"].iloc[0]/bg_df2["total_cells"].iloc[0])    
     
     # Close the cursor and MySQL connection
     cursor.close()
@@ -1839,6 +1840,39 @@ def get_unique_antibodies() -> list:
     
     return ab_list
 
+def get_only_experiment_id(ab_id):
+    warnings.filterwarnings('ignore')
+    
+    params = _config()
+    conn = mysql.connector.connect(**params)
+    
+    ab_placeholders = ','.join(['%s'] * len(ab_id))
+    ab_query = """SELECT DISTINCT antigen_expression.idExperiment
+                FROM antigen_expression
+                WHERE antigen_expression.idAntibody IN (%s);""" % (ab_placeholders)
+    
+    parameters = ab_id.copy()
+    exp_df = pd.read_sql(sql=ab_query, params=parameters, con=conn)
+
+    if conn is not None:
+        conn.close()
+
+    return exp_df
+
+def process_ab(ab):
+    """
+    Process each antibody to retrieve associated experiments.
+    Returns the antibody ID and a string of experiment IDs or "None".
+    """
+    res_df = get_only_experiment_id(ab_id=[ab])
+    if isinstance(res_df, str):
+        return ab, "None"
+    else:
+        experiments_found = list(res_df['idExperiment'])
+        exp_found_str = ','.join(str(exp) for exp in experiments_found)
+        return ab, exp_found_str
+
+
 def which_antibodies(search_query: str) -> pd.DataFrame:
     """
     Performs a full-text search query in a database to find
@@ -1880,23 +1914,14 @@ def which_antibodies(search_query: str) -> pd.DataFrame:
 
     final_df = exp_df.rename(columns={'polyclonal': 'clonality'})
 
-    experiment_each_ab = []
-    for ab in list(final_df['idAntibody']):
-        
-        res_df = get_experiments(ab_id=[ab])
-        # Edge case: if there are no experiments for a result, it will return string
-        if isinstance(res_df, str):
-            # Append None in the result column
-            experiment_each_ab.append("None")
-        else:
-            experiments_found = list(res_df['idExperiment'])
+    # Parallel processing
+    with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
+        results = pool.map(process_ab, list(final_df['idAntibody']))
 
-            # Convert all experiments found into a string
-            exp_found_str = ','.join(str(exp) for exp in experiments_found)
-            experiment_each_ab.append(exp_found_str)
+    # Collect results and add to final_df
+    experiment_each_ab = {ab: exp for ab, exp in results}
 
-    # Add to final column
-    final_df['idExperiment_used'] = experiment_each_ab
+    final_df['idExperiment_used'] = final_df['idAntibody'].map(experiment_each_ab)
 
     if conn is not None:
         conn.close()
@@ -3114,7 +3139,8 @@ def format_reference_table(entire_reference_table: pd.DataFrame,
 
 def downsample(entire_reference_table: pd.DataFrame,
                table_size: int = 10000,
-               population_size: int = 50) -> pd.DataFrame:
+               population_size: int = 50,
+               seed: int = 42) -> pd.DataFrame:
     """
     Downsamples the large reference table to 10,000 rows (cells). 
     Performs downsampling in a controlled randomized order, where
@@ -3132,6 +3158,7 @@ def downsample(entire_reference_table: pd.DataFrame,
         entire_reference_table (pd.DataFrame): downsampled 
             reference table
     """
+    random.seed(seed)
 
     total_num_cells = len(entire_reference_table.index)
     
@@ -3397,7 +3424,8 @@ def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
                                    final_target_idBTOs: list = None,
                                    modified_background_family_idCLs: list = None,
                                    final_background_idBTOs: list = None,
-                                   experiment: list = None):
+                                   experiment: list = None,
+                                   seed: int = 42):
                                        
     warnings.filterwarnings('ignore')
     params = _config()
@@ -3483,12 +3511,12 @@ def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
         # Filter background to keep only rows where "idCell" is not found in A
         filtered_background = background_table[~background_table['idCell'].isin(idCell_in_target_table)]
 
-        ds_background = downsample(format_reference_table(filtered_background), table_size=10000)
+        ds_background = downsample(format_reference_table(filtered_background), table_size=10000, seed=seed)
         ds_background["background"] = True
         print("Part 1: ds_background")
         print(ds_background)
 
-        ds_target = downsample(format_reference_table(target_table), table_size=10000)
+        ds_target = downsample(format_reference_table(target_table), table_size=10000, seed=seed)
         ds_target["background"] = False
         print("Part 2: ds_target")
         print(ds_target)
@@ -3512,7 +3540,7 @@ def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
 
         target_table = pd.read_sql(sql=target_query, params=target_parameters, con=mysql.connector.connect(**params))
 
-        ds_target = downsample(format_reference_table(target_table), table_size=20000)
+        ds_target = downsample(format_reference_table(target_table), table_size=20000, seed=seed)
         ds_target["background"] = False
         print("Target only:")
         print(ds_target)
@@ -3729,3 +3757,25 @@ def plot_celltypes_web(ab_id: str,
         conn.close()
         
     return summary_stats
+
+def get_experiments() -> pd.DataFrame:
+    """
+    Find all experiments in database
+
+    Parameters:
+        N/A
+
+    Returns:
+        experiments_df: The 'experiments' table in the database
+    """
+    params = _config()
+    conn = mysql.connector.connect(**params)
+  
+    experiments_query = """SELECT * 
+                        FROM experiments;"""
+    experiments_df = pd.read_sql(sql=experiments_query, con=conn)
+
+    if conn is not None:
+        conn.close()
+        
+    return experiments_df
