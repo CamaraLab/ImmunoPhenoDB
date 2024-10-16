@@ -6,13 +6,19 @@ dotenv.config({ path: '../.env'})
 
 import cors from 'cors';
 
-const app: Express = express()
-app.use(express.json())
+const app: Express = express();
+app.use(express.json());
+app.use(cors());
 
-app.use(cors())
+const NODE_PORT = 8080; // You can also use process.env.NODE_PORT if needed
+const SERVER_TIMEOUT = 10 * 60 * 1000; // 10 minutes in milliseconds
 
-// const NODE_PORT = process.env.NODE_PORT
-const NODE_PORT = 8080
-app.listen(NODE_PORT, () => console.log(`Node server is up and running at port ${NODE_PORT}`))
+// Start the server and capture the server instance
+const server = app.listen(NODE_PORT, () => {
+    console.log(`Node server is up and running at port ${NODE_PORT}`);
+});
 
-app.use('/api', router)
+// Set the server timeout to 10 minutes
+server.timeout = SERVER_TIMEOUT;
+
+app.use('/api', router);
