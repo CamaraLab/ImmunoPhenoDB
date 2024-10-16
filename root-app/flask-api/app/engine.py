@@ -2676,6 +2676,10 @@ def process_antibody(antibody_and_id, option, idBTO, idExperiment):
             else:
                 print("\tAntibody not here. Taking first hit instead")
                 output_dict[result[0]] = antibody_and_id[1]
+        elif option == 3:
+            print(f"\tOption 3: We have a direct antibody ID match to one in the database")
+            output_dict[result[0]] = antibody_and_id[1]
+
     return output_dict
 
 def parallel_process_antibodies(remaining_ab_pairs, option, idBTO, idExperiment, num_processes=None):
@@ -3158,80 +3162,51 @@ def downsample(entire_reference_table: pd.DataFrame,
         entire_reference_table (pd.DataFrame): downsampled 
             reference table
     """
-    random.seed(seed)
+    np.random.seed(seed)
 
     total_num_cells = len(entire_reference_table.index)
-    
-    # Downsample if number of rows exceeds 10,000
+
+    # Downsample if number of rows is greater than desired table size
     if total_num_cells <= table_size:
         return entire_reference_table
     else:
         cells_to_keep = []
         combined_dfs = []
-        
+
         # Find all unique idCLs in the table
-        unique_idCLs = list(set(entire_reference_table['idCL']))
+        unique_idCLs = entire_reference_table['idCL'].unique()
 
         # For each idCL, calculate the number of cells present
         for idCL in unique_idCLs:
-            idCL_cells = entire_reference_table.loc[entire_reference_table['idCL'] == idCL]
-
-            # Find number of cells for this cell type
-            list_of_cells = list(idCL_cells.index)
+            idCL_cells = entire_reference_table[entire_reference_table['idCL'] == idCL]
+            list_of_cells = idCL_cells.index.to_list()
             num_idCL_cells = len(list_of_cells)
 
-            # Calculate an adjusted sample_amount for each idCL population to choose from
-            sample_amount = ((num_idCL_cells)/(total_num_cells)) * table_size
+            # Calculate an adjusted sample amount for each idCL population to choose from 
+            sample_amount = (num_idCL_cells / total_num_cells) * table_size
+            sample_amount_rounded_up = int(np.ceil(sample_amount))
 
-            # Round up the sample amount
-            sample_amount_rounded_up = math.ceil(sample_amount)
-            
             if sample_amount_rounded_up > population_size:
-                # Randomly sample this number of cells from this idCL population
-                sampled_population_index = sample(list_of_cells, sample_amount_rounded_up)
-
-                # Add these cells to cells_to_keep
-                cells_to_keep.extend(sampled_population_index)
-
-                # Create a df for just these cells in this cell type
-                temp_df = idCL_cells.loc[sampled_population_index]
-
-                # Add this to combined_dfs
-                combined_dfs.append(temp_df)
-                
+                sampled_population_index = np.random.choice(
+                    list_of_cells, sample_amount_rounded_up, replace=False
+                )
+            elif num_idCL_cells > population_size:
+                sampled_population_index = np.random.choice(
+                    list_of_cells, population_size, replace=False
+                )
             else:
-                # If the sample amount was below our threshold, take 50 of the cells remaining
-                if num_idCL_cells > population_size:
-                    # Take 50 of these cells
-                    smaller_sampled_population_index = sample(list_of_cells, population_size)
+                sampled_population_index = list_of_cells
 
-                    # Add these cells to cells_to_keep
-                    cells_to_keep.extend(smaller_sampled_population_index)
-
-                    # Create a df for just these cells in this cell type
-                    temp_df = idCL_cells.loc[smaller_sampled_population_index]
-                    
-                    # Add this to combined_dfs
-                    combined_dfs.append(temp_df)
-                    
-                # If there is not even 50 cells in the population, take whatever remains
-                else:
-                    remaining_sample_population_index = list_of_cells
-                    
-                    # Add these cells to cells_to_keep
-                    cells_to_keep.extend(remaining_sample_population_index)
-
-                    # Create a df for just these cells in this cell type
-                    temp_df = idCL_cells.loc[remaining_sample_population_index]
-                    
-                    # Add this to combined_dfs
-                    combined_dfs.append(temp_df)
+            cells_to_keep.extend(sampled_population_index)
+            combined_dfs.append(idCL_cells.loc[sampled_population_index])
 
         if len(cells_to_keep) > table_size:
-            reduced_cells_to_keep = sample(cells_to_keep, table_size)
-            return entire_reference_table.loc[pd.Index(reduced_cells_to_keep)]
+            reduced_cells_to_keep = np.random.choice(
+                cells_to_keep, table_size, replace=False
+            )
+            return entire_reference_table.loc[reduced_cells_to_keep]
         else:
-            return entire_reference_table.loc[pd.Index(cells_to_keep)]
+            return entire_reference_table.loc[cells_to_keep]
         
 def remove_all_zeros_or_na(protein_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -3265,7 +3240,8 @@ def downsample_reference_table(antibody_pairs: list,
                                parse_option = 1,
                                pairwise_threshold: float = 1.0,
                                na_threshold: float = 1.0,
-                               population_size: int = 50) -> pd.DataFrame:
+                               population_size: int = 50,
+                               seed: int = 42) -> pd.DataFrame:
     """
     Wrapper function for generating an appropriate reference CITE-Seq dataset
     used for STvEA annotation transfer
@@ -3343,7 +3319,8 @@ def downsample_reference_table(antibody_pairs: list,
     # Downsample to 10k cells
     downsampled_df = downsample(renamed_format_df, 
                                 table_size=10000, 
-                                population_size=population_size)
+                                population_size=population_size,
+                                seed=seed)
 
     # Remove any rows or columns that are all 0s or NAs
     clean_downsampled_df = remove_all_zeros_or_na(downsampled_df)
