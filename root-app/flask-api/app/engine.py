@@ -2399,6 +2399,7 @@ def match_antibody(ab_name: str,
     conn = mysql.connector.connect(**params)
     cursor = conn.cursor()
 
+    print("\tInside match_antibody()")
     # If the antibody isn't in the database, start trying to match the next best result
     # Default option: match based on cloneID and aliases
     if option == 1:
@@ -2411,6 +2412,7 @@ def match_antibody(ab_name: str,
         # If there are none, "aliases" remains as an empty list []
         try:
             uniprot, found_aliases = _uniprot_aliases(sci_crunch_alias=ab_name)
+            print("\tOption 1. uniprot:", uniprot)
             aliases = found_aliases
         except:
             aliases = []
@@ -2489,6 +2491,8 @@ def match_antibody(ab_name: str,
         # Investigate further by checking for a matching alias between 
         # antibody in database and the unknown antibody. 
         # This will only happen if there was a valid UniProt ID found earlier
+        print("\tOption 1. similar_abs_list:", similar_abs_list)
+        print("\tOption 1. aliases:", aliases)
         if len(similar_abs_list) > 1 and len(aliases) > 0:
 
             matched_antibodies = []
@@ -2501,6 +2505,7 @@ def match_antibody(ab_name: str,
                 cursor.execute(aliases_query, (similar_ab, ))
                 similar_aliases = cursor.fetchall()
                 similar_aliases_list = [alias[0] for alias in similar_aliases]
+                print("\tOption 1. similar_aliases_list (database):", similar_aliases_list)
 
                 # Find any similar results
                 # Remove any symbols and convert all strings to lowercase
@@ -2512,8 +2517,14 @@ def match_antibody(ab_name: str,
                     matched_antibodies.append(similar_ab)
                 else:
                     continue # skip to next result
-
-            return matched_antibodies
+                print("\tOption 1. matched_antibodies:", matched_antibodies)
+            
+            # If the alias check had no valid options, just return the matched antibodies from earlier
+            if len(matched_antibodies) == 0:
+                print("\tOption 1. matched_antibodies was empty. Returning original matches...")
+                return similar_abs_list
+            else:
+                return matched_antibodies
 
         # If only searching based on cloneID
         elif len(similar_abs_list) > 0:
@@ -2534,6 +2545,7 @@ def match_antibody(ab_name: str,
         try:
             uniprot, found_aliases = _uniprot_aliases(sci_crunch_alias=ab_name)
             aliases = found_aliases
+            print("\tOption 2. uniprot:", uniprot)
         except:
             aliases = []
 
@@ -2611,6 +2623,8 @@ def match_antibody(ab_name: str,
         # If there were more than 1 'similar' antibody based on antibody target
         # Investigate further by checking for a matching alias between 
         # antibody in database and the unknown antibody
+        print("\tOption 2. similar_abs_list:", similar_abs_list)
+        print("\tOption 2. aliases:", aliases)
         if len(similar_abs_list) > 1 and len(aliases) > 0:
             matched_antibodies = []
             
@@ -2622,6 +2636,7 @@ def match_antibody(ab_name: str,
                 cursor.execute(aliases_query, (similar_ab, ))
                 similar_aliases = cursor.fetchall()
                 similar_aliases_list = [alias[0] for alias in similar_aliases]
+                print("\tOption 2. similar_aliases_list (database):", similar_aliases_list)
 
                 # Find any similar results
                 # Remove any symbols and convert all strings to lowercase
@@ -2633,8 +2648,14 @@ def match_antibody(ab_name: str,
                     matched_antibodies.append(similar_ab)
                 else:
                     continue # skip to next result
+            print("\tOption 2. matched_antibodies:", matched_antibodies)
 
-            return matched_antibodies
+            # If the alias check had no valid options, just return the matched antibodies from earlier
+            if len(matched_antibodies) == 0:
+                print("\tOption 2. matched_antibodies was empty. Returning original matches...")
+                return similar_abs_list
+            else:
+                return matched_antibodies
             
         # If only searching based on abTarget
         elif len(similar_abs_list) > 0:
@@ -2661,9 +2682,9 @@ def match_antibody(ab_name: str,
 def process_antibody(antibody_and_id, option, idBTO, idExperiment):
     print(f"Looking up: {antibody_and_id[0]}, {antibody_and_id[1]}")
     result = match_antibody(antibody_and_id[0], antibody_and_id[1], option=option, idBTO=idBTO, idExperiment=idExperiment)
+    print("\tResults:", result)
     output_dict = {}
-    if len(result) > 0: 
-        print("\tResults:", result)
+    if len(result) > 0:   
         if option == 1:
             print(f"\tOption 1: We consider all of these antibodies for {antibody_and_id[1]}")
             for hit in result:
