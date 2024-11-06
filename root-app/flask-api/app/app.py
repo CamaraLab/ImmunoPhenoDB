@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS #Flask-Cors
 import pandas as pd
 import copy
@@ -26,7 +26,8 @@ from .engine import (
     plot_antibodies_web,
     get_celltypes_web,
     plot_celltypes_web,
-    get_experiments
+    get_experiments,
+    decision_tree_reference_table
 )
 
 @app.route('/idcls', methods=['GET'])
@@ -251,6 +252,27 @@ def antibodypanelreference():
                                                seed=seed)
     result_json = result_df.to_json()
     return result_json
+
+@app.route('/decisiontreereference', methods=['POST'])
+def decisiontreereference():
+    res_dict = request.json
+    print("decisiontreereference dict:\n", res_dict)
+    antibody_pairs = res_dict["antibody_pairs"]
+    idBTO = res_dict["idBTO"]
+    idExperiment = res_dict["idExperiment"]
+    parse_option = res_dict["parse_option"]
+
+    buffer = decision_tree_reference_table(antibody_pairs=antibody_pairs,
+                                           idBTO=idBTO,
+                                           idExperiment=idExperiment,
+                                           parse_option=parse_option)
+
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name="data.parquet.snappy",
+        mimetype='application/octet-stream'
+    )
 
 # Website functions
 @app.route('/findabsweb', methods=['POST'])
