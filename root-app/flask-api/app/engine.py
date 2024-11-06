@@ -1,6 +1,7 @@
 import warnings
 import logging
 import time
+import io
 
 import configparser
 import mysql.connector # mysql-connector-python
@@ -3544,6 +3545,160 @@ def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
         print(ds_target)
 
         return ds_target
+
+
+# ----------------------- Functions for decision_tree_reference_table --------------#
+def drop_all_na_rows(dataframe):
+    # Temp take dataframe without idCL column
+    dataframe_copy = dataframe.loc[:, dataframe.columns != "idCL"]
+    dropped_df = dataframe_copy.dropna(axis=0, how="all")
+
+    # Add back in idCLs for remaining rows
+    dropped_df["idCL"] = dataframe["idCL"]
+
+    return dropped_df
+
+def decision_tree_reference_table(antibody_pairs: list,
+                                 idBTO: list = None,
+                                 idExperiment: list = None,
+                                 parse_option: int = 1) -> pd.DataFrame:
+    """
+    Queries the database to retrieve reference CITE-Seq data based on
+    the provided antibodies, tissues, and experiments. 
+
+    Parameters:
+        antibodies (list): list of antibodies to query for
+        idBTO (list): list of tissues to query for
+        idExperiment (list): list of experiments to query for
+        parse_option (int): level of parsing for antibodies received from the query
+    
+    Returns:
+        buffer: serialized dataframe using parquet snappy compression. This will be
+        deserialized on the client to receive a dataframe with columns of antibodies
+        and rows of cells.
+    """
+    warnings.filterwarnings('ignore')
+    params = _config()
+    conn = mysql.connector.connect(**params)
+    cursor = conn.cursor()
+
+    # Create antibody dictionary
+    print("Decision Tree: Parsing antibodies...")
+    antibodies_dict = parse_antibodies(antibody_pairs, 
+                                       option=parse_option, 
+                                       idBTO=idBTO, 
+                                       idExperiment=idExperiment) 
+    print("Decision Tree: antibodies_dict after parse_antibodies:", antibodies_dict)
+    antibodies = list(antibodies_dict.keys())
+    print("Decision Tree: antibodies used for querying:", antibodies)
+
+    # No additional filtering
+    if antibodies is not None and idBTO is None and idExperiment is None:
+        ab_placeholders = ','.join(['%s'] * len(antibodies))
+    
+        ab_query = """SELECT cells.idCell, antigen_expression.normValue, 
+                antibodies.abTarget, antibodies.idAntibody, cells.idCL, experiments.idExperiment
+                FROM cells
+                INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+                INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+                INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+                WHERE antibodies.idAntibody IN (%s);""" % (ab_placeholders)
+
+        parameters = antibodies.copy()
+        exp_table = pd.read_sql(sql=ab_query, params=parameters, con=conn)
+
+    # Filter only by experiment ID
+    elif antibodies is not None and idBTO is None and idExperiment is not None:
+        ab_placeholders = ','.join(['%s'] * len(antibodies))
+        idExperiment_placeholders = ','.join(['%s'] * len(idExperiment))
+                       
+        ab_idExp_query = """SELECT cells.idCell, antigen_expression.normValue, 
+                antibodies.abTarget, antibodies.idAntibody, cells.idCL, experiments.idExperiment
+                FROM cells
+                INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+                INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+                INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+                WHERE antibodies.idAntibody IN (%s) AND
+                experiments.idExperiment IN (%s);""" % (ab_placeholders,  idExperiment_placeholders)
+    
+        parameters = antibodies.copy()
+        parameters.extend(idExperiment)
+    
+        exp_table = pd.read_sql(sql=ab_idExp_query, params=parameters, con=conn)
+
+    # Filter only by tissue ID
+    elif antibodies is not None and idBTO is not None and idExperiment is None:
+        ab_placeholders = ','.join(['%s'] * len(antibodies))
+        idBTO_placeholders = ','.join(['%s'] * len(idBTO))
+                       
+        ab_idBTO_query = """SELECT cells.idCell, antigen_expression.normValue, 
+            antibodies.abTarget, antibodies.idAntibody, cells.idCL, experiments.idExperiment
+            FROM cells
+            INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+            INNER JOIN tissues on experiments.idBTO = tissues.idBTO
+            INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+            INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+            WHERE antibodies.idAntibody IN (%s) AND
+             experiments.idBTO IN (%s);""" % (ab_placeholders, idBTO_placeholders)
+    
+        parameters = antibodies.copy()
+        parameters.extend(idBTO)
+        
+        exp_table = pd.read_sql(sql=ab_idBTO_query, params=parameters, con=conn)
+
+    # Filter by both tissue and experiment
+    elif antibodies is not None and idBTO is not None and idExperiment is not None:
+        ab_placeholders = ','.join(['%s'] * len(antibodies))
+        idBTO_placeholders = ','.join(['%s'] * len(idBTO))
+        idExperiment_placeholders = ','.join(['%s'] * len(idExperiment))
+                       
+        ab_idBTO_idExp_query = """SELECT cells.idCell, antigen_expression.normValue, 
+            antibodies.abTarget, antibodies.idAntibody, cells.idCL, experiments.idExperiment
+            FROM cells
+            INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
+            INNER JOIN tissues on experiments.idBTO = tissues.idBTO
+            INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+            INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+            WHERE antibodies.idAntibody IN (%s) AND
+             experiments.idBTO IN (%s) AND 
+             experiments.idExperiment IN (%s);""" % (ab_placeholders, idBTO_placeholders, idExperiment_placeholders)
+    
+        parameters = antibodies.copy()
+        parameters.extend(idBTO)
+        parameters.extend(idExperiment)
+
+        exp_table = pd.read_sql(sql=ab_idBTO_idExp_query, params=parameters, con=conn)
+
+    # Antibodies in the big table must be consistent with the antibodies in the mapping dictionary
+    # This is because matching by clone ID can have multiple database antibodies matched to the same spreadsheet antibody
+    big_table_copy = exp_table.copy(deep=True)
+    big_table_copy['idAntibody'] = big_table_copy['idAntibody'].map(antibodies_dict)
+    print("Decision Tree: Re-mapped idAntibody prior to pivot. big_table_copy:\n", big_table_copy)
+
+    # Convert big_table into CITE-SEQ format (cells x antibodies) using pivot tables
+    # Last column: idCL
+    format_df = format_reference_table(big_table_copy)
+    # Double check that all antibody IDs are consistent with the ones in the mapping dictionary
+    renamed_format_df = format_df.rename(columns=antibodies_dict, inplace=False)
+
+    # Drop any rows that are all NAs
+    renamed_format_df = drop_all_na_rows(renamed_format_df)
+    print("Decision Tree: Dropping rows that are all NAs...\n", renamed_format_df)
+
+    # Remove the index name "idCell"
+    renamed_format_df.index.name = None
+
+    # Drop "idExperiment"
+    renamed_format_df = renamed_format_df.drop(columns=["idExperiment"])
+    print("Decision Tree: renamed_format_df:\n", renamed_format_df)
+
+    # Compress using Parquet using Snappy compression
+    buffer = io.BytesIO()
+    renamed_format_df.to_parquet(buffer, index=False, compression='snappy') # snappy requires pyarrow package
+    buffer.seek(0)
+
+    return buffer
+
 
 #------------------------ Functions for get_antibodies_web ------------------------#
 def subgraph(G: nx.DiGraph, 
