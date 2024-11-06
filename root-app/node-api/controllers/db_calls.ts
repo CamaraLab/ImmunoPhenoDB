@@ -249,6 +249,26 @@ export const stveaReference = async (req: Request, res: Response) => {
     }
 }
 
+export const decisionTreeReference = async (req: Request, res: Response) => {
+    try {
+        console.log("decisionTreeReference recieved from client:", req.body)
+        const flask_decision_Tree_Reference = await axios.post(`${system_URL}/decisiontreereference`, 
+            req.body,
+            { responseType: 'arraybuffer' }) // Necessary for binary data
+
+        // Set response headers for binary file
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Disposition', 'attachment; filename="data.parquet.snappy"');
+        res.status(200).send(Buffer.from(flask_decision_Tree_Reference.data));
+    }
+    catch (error) {
+        if (error) {
+            console.log(error)
+            res.status(400).send("Bad request. Error with decisionTreeReference computation.")
+        }
+    }
+}
+
 export const antibodyPanelReference = async (req: Request, res: Response) => {
     try {
         console.log("antibodyPanelReference recieved from client:", req.body)
