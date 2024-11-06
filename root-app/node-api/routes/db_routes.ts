@@ -17,7 +17,8 @@ import {idCLs,
         findAbsWeb,
         plotAbsWeb,
         findCellTypesWeb,
-        plotCellTypesWeb } from '../controllers/db_calls.js'
+        plotCellTypesWeb,
+        decisionTreeReference} from '../controllers/db_calls.js'
 
 
 const router : Router = express.Router()
@@ -38,6 +39,7 @@ router.post('/whichexperiments', whichExperiments)
 router.post('/stveareference', stveaReference)
 router.post('/convertcelltype', convertCellType)
 router.post('/antibodypanelreference', antibodyPanelReference)
+router.post('/decisiontreereference', decisionTreeReference)
 
 // Website routes
 router.post('/findabsweb', findAbsWeb)
