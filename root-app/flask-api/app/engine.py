@@ -3349,6 +3349,7 @@ def downsample_reference_table(antibody_pairs: list,
     
     return clean_downsampled_df
 
+#------------------------ Functions for finding summary statistics of the database ------------------------#
 def database_statistics():
     params = _config()
     conn = mysql.connector.connect(**params)
@@ -3411,6 +3412,19 @@ def database_statistics():
     }
 
     return database_statistics
+
+#------------------------ Functions for optimal antibody panel reference table ------------------------#
+def antibody_table():
+    params = _config()
+    conn = mysql.connector.connect(**params)
+
+    clone_target_query = """SELECT idAntibody, cloneID, abTarget 
+                            FROM antibodies;"""
+
+    antibodies_df = pd.read_sql(sql=clone_target_query, con=conn)
+    conn.close()
+    
+    return antibodies_df
 
 def execute_query(query_params):
     query, parameters, conn_params = query_params
