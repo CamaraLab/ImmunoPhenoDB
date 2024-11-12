@@ -13,6 +13,7 @@ import {idCLs,
         stveaReference,
         convertCellType,
         databaseStatistics,
+        antibodiesTable,
         antibodyPanelReference,
         findAbsWeb,
         plotAbsWeb,
@@ -27,6 +28,7 @@ router.get('/idcls', idCLs)
 router.get('/tissues', tissues)
 router.get('/experiments', experiments)
 router.get('/databasestatistics', databaseStatistics)
+router.get('/antibodiestable', antibodiesTable)
 
 router.post('/findabs', findAbs)
 router.post('/plotabs', plotAbs)
