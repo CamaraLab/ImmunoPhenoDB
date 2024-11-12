@@ -114,6 +114,21 @@ export const databaseStatistics = async(req: any, res: Response) => {
     }
 }
 
+export const antibodiesTable = async(req: any, res: Response) => {
+    try{
+        const flask_antibodiesTable = await axios.get(`${system_URL}/antibodiestable`)
+        console.log("antibodies_table:", flask_antibodiesTable)
+        res.status(200).send(flask_antibodiesTable.data)
+    }
+    catch (error) {
+        if (error) {
+            console.log(error)
+            res.status(400).send("Bad request. Error with antibodiesTable server request.")
+        }
+    }
+}
+
+
 export const findAbs = async (req: Request, res: Response) => {
     try {
         console.log("findAbs recieved from client:", req.body)
