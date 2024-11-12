@@ -21,6 +21,7 @@ from .engine import (
     get_tissues,
     downsample_reference_table,
     database_statistics,
+    antibody_table,
     antibody_panel_reference_table,
     get_antibodies_web,
     plot_antibodies_web,
@@ -232,6 +233,12 @@ def stveareference():
 def databasestatistics():
     stats_json = database_statistics()
     return stats_json
+
+@app.route('/antibodiestable', methods=['GET'])
+def antibodiestable():
+    antibodies_cloneID_abTarget = antibody_table()
+    antibodies_cloneID_abTarget_json = antibodies_cloneID_abTarget.to_json()
+    return antibodies_cloneID_abTarget_json
 
 @app.route('/antibodypanelreference', methods=['POST'])
 def antibodypanelreference():
