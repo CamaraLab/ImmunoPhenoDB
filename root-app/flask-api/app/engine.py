@@ -2691,13 +2691,17 @@ def process_antibody(antibody_and_id, option, idBTO, idExperiment):
             for hit in result:
                 output_dict[hit] = antibody_and_id[1]
         elif option == 2:
-            print(f"\tOption 2: We need to check for the actual result. If found, use it. If not, take first hit")
+            # print(f"\tOption 2: We need to check for the actual result. If found, use it. If not, take first hit")
+            print(f"\tOption 2: We need to check for the actual result. If found, use it. If not, consider ALL of these antibodies")
             if antibody_and_id[1] in result:
                 print("\tActual antibody was here")
                 output_dict[antibody_and_id[1]] = antibody_and_id[1]
             else:
-                print("\tAntibody not here. Taking first hit instead")
-                output_dict[result[0]] = antibody_and_id[1]
+                # print("\tAntibody not here. Taking first hit instead")
+                # output_dict[result[0]] = antibody_and_id[1]
+                print("\tAntibody not here. Consider ALL of these antibodies")
+                for hit in result:
+                    output_dict[hit] = antibody_and_id[1]
         elif option == 3:
             print(f"\tOption 3: We have a direct antibody ID match to one in the database")
             output_dict[result[0]] = antibody_and_id[1]
