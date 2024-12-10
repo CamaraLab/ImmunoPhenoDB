@@ -3305,9 +3305,11 @@ def downsample_reference_table(antibody_pairs: list,
                                    
     # Find truth table for all experiments and antibodies
     initial_tb = find_exp_truth_table(antibodies=antibodies, idBTO=idBTO, idExperiment=idExperiment)
+    print("initial_tb:\n", initial_tb)
                
     # Drop all columns (antibodies) that only contain 0s (false)
     first_ab_drop = drop_antibodies(initial_tb)
+    print("first_ab_drop:\n", first_ab_drop)
 
     # # Calculate pairwise distances between idExperiment and remaining antibodies
     # pairwise_dist = pairwise_distance_matrix(first_ab_drop)
@@ -3328,6 +3330,8 @@ def downsample_reference_table(antibody_pairs: list,
     # Use the remaining antibodies and experiments to query for cells in the database
     antibodies_to_query = [ab for ab in first_ab_drop.columns if ab != "idExperiment"] 
     experiments_to_query = list(first_ab_drop["idExperiment"])
+    print("antibodies_to_query:\n", antibodies_to_query)
+    print("experiments_to_query:\n", experiments_to_query)
                                    
     big_table = entire_reference_table(antibodies_to_query, experiments_to_query)
 
@@ -3347,11 +3351,9 @@ def downsample_reference_table(antibody_pairs: list,
                                 table_size=10000, 
                                 population_size=population_size,
                                 seed=seed)
+    print("downsampled_df:\n", downsampled_df)
 
-    # Remove any rows or columns that are all 0s or NAs
-    clean_downsampled_df = remove_all_zeros_or_na(downsampled_df)
-    
-    return clean_downsampled_df
+    return downsampled_df
 
 #------------------------ Functions for finding summary statistics of the database ------------------------#
 def database_statistics():
