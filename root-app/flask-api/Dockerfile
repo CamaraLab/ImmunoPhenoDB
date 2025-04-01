@@ -7,7 +7,8 @@ WORKDIR /app
 # (ARGS are in lowercase to distinguish them from ENV)
 
 # Use latest spark version (3.5.1 as of 2/29/2024), (3.5.2 as of 8/15/2024), (3.5.3 as of 10/16/2024).. Use stable 3.4.3 instead?
-ARG spark_version="3.4.3"
+# 3.4.3 is no longer there.. using (3.4.4 as of 4/1/2025)
+ARG spark_version="3.4.4"
 ARG hadoop_version="3"
 ARG scala_version
 # ARG spark_checksum="8883c67e0a138069e597f3e7d4edbbd5c3a565d50b28644aad02856a1ec1da7cb92b8f80454ca427118f69459ea326eaa073cf7b1a860c3b796f4b07c2101319"
