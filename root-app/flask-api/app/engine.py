@@ -3931,7 +3931,7 @@ def plot_celltypes_web(ab_id: str,
         
     return summary_stats
 
-def get_experiments() -> pd.DataFrame:
+def get_all_experiments() -> pd.DataFrame:
     """
     Find all experiments in database
 

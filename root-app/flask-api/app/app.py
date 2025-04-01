@@ -27,7 +27,7 @@ from .engine import (
     plot_antibodies_web,
     get_celltypes_web,
     plot_celltypes_web,
-    get_experiments,
+    get_all_experiments,
     decision_tree_reference_table
 )
 
@@ -351,7 +351,7 @@ def plotcelltypesweb():
 
 @app.route('/experiments', methods=['GET'])
 def experiments():
-    experiments_df = get_experiments()
+    experiments_df = get_all_experiments()
     return experiments_df.to_json()
 
 if __name__ == '__main__':
