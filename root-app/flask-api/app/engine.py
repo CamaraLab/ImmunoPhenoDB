@@ -2434,6 +2434,8 @@ def match_antibody(ab_name: str,
 
         # For clone ID and tissue filter
         elif idBTO is not None and idExperiment is None:
+            idBTO_placeholders = ','.join(['%s'] * len(idBTO))
+
             find_ab_tissue = """SELECT DISTINCT antibodies.idAntibody
                         FROM cells
                         INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
@@ -2441,7 +2443,7 @@ def match_antibody(ab_name: str,
                         INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
                         INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
                         WHERE antibodies.cloneID = %s AND
-                              experiments.idBTO IN (%s);"""
+                              experiments.idBTO IN (%s);""" % ('%s', idBTO_placeholders)
 
             parameters = [cloneID]
             parameters.extend(idBTO)
@@ -2452,6 +2454,8 @@ def match_antibody(ab_name: str,
 
         # For clone ID and idExperiment filter
         elif idBTO is None and idExperiment is not None:
+            idExperiment_placeholders = ','.join(['%s'] * len(idExperiment))
+
             find_ab_exp = """SELECT DISTINCT (antibodies.idAntibody)
                         FROM cells
                         INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
@@ -2459,7 +2463,7 @@ def match_antibody(ab_name: str,
                         INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
                         INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
                         WHERE antibodies.cloneID = %s AND
-                        experiments.idExperiment IN (%s);"""
+                        experiments.idExperiment IN (%s);""" % ('%s', idExperiment_placeholders)
 
             parameters = [cloneID]
             parameters.extend(idExperiment)
@@ -2470,6 +2474,9 @@ def match_antibody(ab_name: str,
 
         # For clone ID and tissue AND idExperiment filter
         elif idBTO is not None and idExperiment is not None:
+            idBTO_placeholders = ','.join(['%s'] * len(idBTO))
+            idExperiment_placeholders = ','.join(['%s'] * len(idExperiment))
+
             find_ab_tissue_exp = """SELECT DISTINCT (antibodies.idAntibody)
                                 FROM cells
                                 INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
@@ -2478,7 +2485,7 @@ def match_antibody(ab_name: str,
                                 INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
                                 WHERE antibodies.cloneID = %s AND
                                 experiments.idBTO IN (%s) AND
-                                experiments.idExperiment IN (%s);"""
+                                experiments.idExperiment IN (%s);""" % ('%s', idBTO_placeholders, idExperiment_placeholders)
 
             parameters = [cloneID]
             parameters.extend(idBTO)
@@ -2567,6 +2574,8 @@ def match_antibody(ab_name: str,
 
         # For ab_name and tissue filter
         elif idBTO is not None and idExperiment is None:
+            idBTO_placeholders = ','.join(['%s'] * len(idBTO))
+            
             find_ab_tissue = """SELECT DISTINCT antibodies.idAntibody
                         FROM cells
                         INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
@@ -2574,7 +2583,7 @@ def match_antibody(ab_name: str,
                         INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
                         INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
                         WHERE antibodies.abTarget = %s AND
-                              experiments.idBTO IN (%s);"""
+                              experiments.idBTO IN (%s);""" % ('%s', idBTO_placeholders)
 
             parameters = [ab_name]
             parameters.extend(idBTO)
@@ -2585,6 +2594,8 @@ def match_antibody(ab_name: str,
 
         # For ab_name and idExperiment filter
         elif idBTO is None and idExperiment is not None:
+            idExperiment_placeholders = ','.join(['%s'] * len(idExperiment))
+
             find_ab_exp = """SELECT DISTINCT antibodies.idAntibody
                         FROM cells
                         INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
@@ -2592,7 +2603,7 @@ def match_antibody(ab_name: str,
                         INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
                         INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
                         WHERE antibodies.abTarget = %s AND
-                        experiments.idExperiment IN (%s);"""
+                        experiments.idExperiment IN (%s);""" % ('%s', idExperiment_placeholders)
 
             parameters = [ab_name]
             parameters.extend(idExperiment)
@@ -2603,6 +2614,9 @@ def match_antibody(ab_name: str,
 
         # For ab_name and tissue AND idExperiment filter
         elif idBTO is not None and idExperiment is not None:
+            idBTO_placeholders = ','.join(['%s'] * len(idBTO))
+            idExperiment_placeholders = ','.join(['%s'] * len(idExperiment))
+
             find_ab_tissue_exp = """SELECT DISTINCT (antibodies.idAntibody)
                                 FROM cells
                                 INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment
@@ -2611,7 +2625,7 @@ def match_antibody(ab_name: str,
                                 INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
                                 WHERE antibodies.abTarget = %s AND
                                 experiments.idBTO IN (%s) AND
-                                experiments.idExperiment IN (%s);"""
+                                experiments.idExperiment IN (%s);""" % ('%s', idBTO_placeholders, idExperiment_placeholders)
 
             parameters = [ab_name]
             parameters.extend(idBTO)
