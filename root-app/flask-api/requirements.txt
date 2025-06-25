@@ -11,3 +11,4 @@ networkx==3.1
 multiprocess==0.70.15
 nxontology==0.5.0
 pyarrow==13.0.0
+redis==6.2.0
