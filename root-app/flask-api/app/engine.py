@@ -37,6 +37,13 @@ UNIPROT_BASE = "https://rest.uniprot.org"
 UNIPROT_ENDPOINT = "/uniprotkb/search"
 EBI_BASE = "https://www.ebi.ac.uk/ols/api/search"
 
+# For Redis
+import redis
+import pyarrow as pa
+import pyarrow.parquet as pq
+redis_client = redis.Redis(host='redis', port=6379, db=0, decode_responses=False,
+                           socket_connect_timeout=1, socket_timeout=1) # Add timeouts for resilience
+
 def _config(filename: str = '/app/config/config.ini', 
             section: str ='mysql') -> dict:
     """
@@ -3453,132 +3460,387 @@ def execute_query(query_params):
     conn.close()
     return result
 
-def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
+def antibody_panel_reference_table_unified_query(unique_target_family_idCLs: list  = None,
                                    final_target_idBTOs: list = None,
                                    modified_background_family_idCLs: list = None,
-                                   final_background_idBTOs: list = None,
+                                   final_background_idBTOs: list = None, # this will always be []
                                    experiment: list = None,
                                    seed: int = 42):
                                        
     warnings.filterwarnings('ignore')
     params = _config()
+    
+    # --- Build condition strings and parameter lists for each part ---
+    
+    target_conditions = []
+    target_params = []
+    if unique_target_family_idCLs:
+        placeholders = ','.join(['%s'] * len(unique_target_family_idCLs))
+        target_conditions.append(f"cells.idCL IN ({placeholders})")
+        target_params.extend(unique_target_family_idCLs)
+    if final_target_idBTOs:
+        placeholders = ','.join(['%s'] * len(final_target_idBTOs))
+        target_conditions.append(f"tissues.idBTO IN ({placeholders})")
+        target_params.extend(final_target_idBTOs)
+
+    background_conditions = []
+    background_params = []
+    if modified_background_family_idCLs:
+        placeholders = ','.join(['%s'] * len(modified_background_family_idCLs))
+        background_conditions.append(f"cells.idCL IN ({placeholders})")
+        background_params.extend(modified_background_family_idCLs)\
+
+    # Use the same target BTO in the background query as well
+    bto_placeholders = ','.join(['%s'] * len(final_target_idBTOs))
+    background_conditions.append(f"tissues.idBTO IN ({bto_placeholders})")
+    background_params.extend(final_target_idBTOs)
+
+    # if final_background_idBTOs: # no longer supports background BTO
+    #     placeholders = ','.join(['%s'] * len(final_background_idBTOs))
+    #     background_conditions.append(f"tissues.idBTO IN ({placeholders})")
+    #     background_params.extend(final_background_idBTOs)
+        
+    # Combine individual conditions with AND
+    target_conditions_str = " AND ".join(target_conditions) if target_conditions else "FALSE"
+    background_conditions_str = " AND ".join(background_conditions) if background_conditions else "FALSE"
+
+    # --- Build the final WHERE clause and the complete parameter list ---
+
+    main_where_clauses = []
+    # ** THE CRITICAL FIX IS HERE **
+    # We build the final parameter list by concatenating the individual parameter lists
+    # in the same order they will appear in the final query.
+    all_params = []
+
+    # 1. Parameters for the CASE statement
+    if target_conditions:
+        all_params.extend(target_params)
+    if background_conditions:
+        all_params.extend(background_params)
+        
+    # 2. Parameters for the WHERE clause (which are duplicates of the above)
+    if target_conditions:
+        main_where_clauses.append(f"({target_conditions_str})")
+        all_params.extend(target_params)
+    if background_conditions:
+        main_where_clauses.append(f"({background_conditions_str})")
+        all_params.extend(background_params)
+
+    if not main_where_clauses:
+        # If no conditions were provided, return an empty DataFrame to avoid an invalid query.
+        print("No valid target or background criteria provided. Returning empty table.")
+        return pd.DataFrame()
+        
+    final_where_clause = " OR ".join(main_where_clauses)
+
+    # --- Construct the single, unified SQL query ---
+    sql_query = f"""
+    SELECT 
+        cells.idCell, 
+        antigen_expression.normValue, 
+        antibodies.abTarget, 
+        CONCAT(antibodies.idAntibody, ' (', antibodies.abTarget, ')') AS idAntibody, 
+        cells.idCL, 
+        experiments.idExperiment,
+        tissues.idBTO,
+        CASE
+            WHEN {target_conditions_str} THEN 0
+            WHEN {background_conditions_str} THEN 1
+            ELSE 2 -- Should not happen with this WHERE clause, but good for safety
+        END as is_background
+    FROM cells
+    INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment 
+    INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+    INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+    INNER JOIN tissues ON experiments.idBTO = tissues.idBTO
+    WHERE {final_where_clause}
+    """
+
+    # Append the optional experiment filter if it exists
+    if experiment:
+        placeholders = ','.join(['%s'] * len(experiment))
+        sql_query += f" AND antigen_expression.idExperiment IN ({placeholders})"
+        all_params.extend(experiment)
+
+    # --- Execute the query and process the results ---
+    
     conn = mysql.connector.connect(**params)
+    combined_raw_table = pd.read_sql(sql=sql_query, params=all_params, con=conn)
+    conn.close()
+
+    # The rest of the function proceeds as before...
+    if combined_raw_table.empty:
+        return pd.DataFrame()
+
+    target_table = combined_raw_table[combined_raw_table['is_background'] == 0].drop(columns=['is_background'])
+    background_table = combined_raw_table[combined_raw_table['is_background'] == 1].drop(columns=['is_background'])
+
+    ds_background = downsample(format_reference_table(background_table), table_size=10000, seed=seed)
+    ds_background["background"] = True
+    print("Unified query ds_background:\n", ds_background)
+
+    ds_target = downsample(format_reference_table(target_table), table_size=10000, seed=seed)
+    ds_target["background"] = False
+    print("Unified query ds_target:\n", ds_target)
+
+    combined_df = pd.concat([ds_target, ds_background], axis=0, ignore_index=False)
+    columns = [col for col in combined_df.columns if col not in ['idCL', 'idExperiment', 'background']]
+    columns += ['idCL', 'idExperiment', 'background']
+    combined_df = combined_df[columns]
+    print("Unified query combined_df:\n", combined_df)
+    
+    return combined_df
+
+# def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
+#                                    final_target_idBTOs: list = None,
+#                                    modified_background_family_idCLs: list = None,
+#                                    final_background_idBTOs: list = None,
+#                                    experiment: list = None,
+#                                    seed: int = 42): # Old query, didn't properly restrict by tissue for background
                                        
-    # Perform the target query (required)
-    base_query = """SELECT cells.idCell, 
-                        antigen_expression.normValue, 
-                        antibodies.abTarget, 
-                        CONCAT(antibodies.idAntibody, ' (', antibodies.abTarget, ')') AS idAntibody, 
-                        cells.idCL, 
-                        experiments.idExperiment,
-                        tissues.idBTO
-                    FROM cells
-                    INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment 
-                    INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
-                    INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
-                    INNER JOIN tissues ON experiments.idBTO = tissues.idBTO"""
+#     warnings.filterwarnings('ignore')
+#     params = _config()
+#     conn = mysql.connector.connect(**params)
+                                       
+#     # Perform the target query (required)
+#     base_query = """SELECT cells.idCell, 
+#                         antigen_expression.normValue, 
+#                         antibodies.abTarget, 
+#                         CONCAT(antibodies.idAntibody, ' (', antibodies.abTarget, ')') AS idAntibody, 
+#                         cells.idCL, 
+#                         experiments.idExperiment,
+#                         tissues.idBTO
+#                     FROM cells
+#                     INNER JOIN experiments ON cells.idExperiment = experiments.idExperiment 
+#                     INNER JOIN antigen_expression ON cells.idCell = antigen_expression.idCell
+#                     INNER JOIN antibodies ON antigen_expression.idAntibody = antibodies.idAntibody
+#                     INNER JOIN tissues ON experiments.idBTO = tissues.idBTO"""
 
-    target_where_clauses = []
-    target_parameters = []
-    background_where_clauses = []
-    background_parameters = []
-    experiment_where_clauses = []
-    experiment_parameters = []
+#     target_where_clauses = []
+#     target_parameters = []
+#     background_where_clauses = []
+#     background_parameters = []
+#     experiment_where_clauses = []
+#     experiment_parameters = []
 
-    if unique_target_family_idCLs is not None and len(unique_target_family_idCLs) > 0:
-        idCL_placeholders = ','.join(['%s'] * len(unique_target_family_idCLs))
-        target_where_clauses.append(f"idCL IN ({idCL_placeholders})")
-        target_parameters.extend(unique_target_family_idCLs)
+#     if unique_target_family_idCLs is not None and len(unique_target_family_idCLs) > 0:
+#         idCL_placeholders = ','.join(['%s'] * len(unique_target_family_idCLs))
+#         target_where_clauses.append(f"idCL IN ({idCL_placeholders})")
+#         target_parameters.extend(unique_target_family_idCLs)
 
-    if final_target_idBTOs is not None and len(final_target_idBTOs) > 0:
-        idBTO_placeholders = ','.join(['%s'] * len(final_target_idBTOs))
-        target_where_clauses.append(f"tissues.idBTO IN ({idBTO_placeholders})")
-        target_parameters.extend(final_target_idBTOs)
+#     if final_target_idBTOs is not None and len(final_target_idBTOs) > 0:
+#         idBTO_placeholders = ','.join(['%s'] * len(final_target_idBTOs))
+#         target_where_clauses.append(f"tissues.idBTO IN ({idBTO_placeholders})")
+#         target_parameters.extend(final_target_idBTOs)
 
-    if modified_background_family_idCLs is not None and len(modified_background_family_idCLs) > 0:
-        idCL_placeholders = ','.join(['%s'] * len(modified_background_family_idCLs))
-        background_where_clauses.append(f"idCL IN ({idCL_placeholders})")
-        background_parameters.extend(modified_background_family_idCLs)
+#     if modified_background_family_idCLs is not None and len(modified_background_family_idCLs) > 0:
+#         idCL_placeholders = ','.join(['%s'] * len(modified_background_family_idCLs))
+#         background_where_clauses.append(f"idCL IN ({idCL_placeholders})")
+#         background_parameters.extend(modified_background_family_idCLs)
 
-    if final_background_idBTOs is not None and len(final_background_idBTOs) > 0:
-        idBTO_placeholders = ','.join(['%s'] * len(final_background_idBTOs))
-        background_where_clauses.append(f"tissues.idBTO IN ({idBTO_placeholders})")
-        background_parameters.extend(final_background_idBTOs)
+#     if final_background_idBTOs is not None and len(final_background_idBTOs) > 0:
+#         idBTO_placeholders = ','.join(['%s'] * len(final_background_idBTOs))
+#         background_where_clauses.append(f"tissues.idBTO IN ({idBTO_placeholders})")
+#         background_parameters.extend(final_background_idBTOs)
 
-    if experiment is not None and len(experiment) > 0:
-        experiment_placeholders = ','.join(['%s'] * len(experiment))
-        experiment_where_clauses.append(f"antigen_expression.idExperiment IN ({experiment_placeholders})")
-        experiment_parameters.extend(experiment)
+#     if experiment is not None and len(experiment) > 0:
+#         experiment_placeholders = ','.join(['%s'] * len(experiment))
+#         experiment_where_clauses.append(f"antigen_expression.idExperiment IN ({experiment_placeholders})")
+#         experiment_parameters.extend(experiment)
 
-    target_table = pd.DataFrame()
-    background_table = pd.DataFrame()
+#     target_table = pd.DataFrame()
+#     background_table = pd.DataFrame()
 
-    if target_where_clauses and background_where_clauses:
-        target_where_clauses_together = " WHERE " + " AND ".join(target_where_clauses)
-        target_query = base_query + target_where_clauses_together
-        if experiment_where_clauses:
-            exp_where_clauses_together = " AND " + experiment_where_clauses[0]
-            target_query += exp_where_clauses_together
-            target_parameters.extend(experiment_parameters)
+#     if target_where_clauses and background_where_clauses:
+#         target_where_clauses_together = " WHERE " + " AND ".join(target_where_clauses)
+#         target_query = base_query + target_where_clauses_together
+#         if experiment_where_clauses:
+#             exp_where_clauses_together = " AND " + experiment_where_clauses[0]
+#             target_query += exp_where_clauses_together
+#             target_parameters.extend(experiment_parameters)
 
-        background_where_clauses_together = " WHERE " + " AND ".join(background_where_clauses)
-        background_query = base_query + background_where_clauses_together
-        if experiment_where_clauses:
-            exp_where_clauses_together = " AND " + experiment_where_clauses[0]
-            background_query += exp_where_clauses_together
-            background_parameters.extend(experiment_parameters)
+#         background_where_clauses_together = " WHERE " + " AND ".join(background_where_clauses)
+#         background_query = base_query + background_where_clauses_together
+#         if experiment_where_clauses:
+#             exp_where_clauses_together = " AND " + experiment_where_clauses[0]
+#             background_query += exp_where_clauses_together
+#             background_parameters.extend(experiment_parameters)
 
-        query_params_list = [
-            (target_query, target_parameters, params),
-            (background_query, background_parameters, params)
-        ]
+#         query_params_list = [
+#             (target_query, target_parameters, params),
+#             (background_query, background_parameters, params)
+#         ]
 
-        with multiprocessing.Pool(processes=2) as pool:
-            results = pool.map(execute_query, query_params_list)
+#         with multiprocessing.Pool(processes=2) as pool:
+#             results = pool.map(execute_query, query_params_list)
 
-        target_table = results[0]
-        background_table = results[1]
+#         target_table = results[0]
+#         background_table = results[1]
 
-        # Get all unique "idCell" values from target_table
+#         # Get all unique "idCell" values from target_table
+#         idCell_in_target_table = target_table['idCell'].unique()
+#         # Filter background to keep only rows where "idCell" is not found in A
+#         filtered_background = background_table[~background_table['idCell'].isin(idCell_in_target_table)]
+
+#         ds_background = downsample(format_reference_table(filtered_background), table_size=10000, seed=seed)
+#         ds_background["background"] = True
+#         print("Part 1: ds_background")
+#         print(ds_background)
+
+#         ds_target = downsample(format_reference_table(target_table), table_size=10000, seed=seed)
+#         ds_target["background"] = False
+#         print("Part 2: ds_target")
+#         print(ds_target)
+
+#         combined_df = pd.concat([ds_target, ds_background], axis=0, ignore_index=False)
+#         columns = [col for col in combined_df.columns if col not in ['idCL', 'idExperiment', 'background']]
+#         columns += ['idCL', 'idExperiment', 'background']
+#         combined_df = combined_df[columns]
+#         print("Part 3: combined_df")
+#         print(combined_df)
+
+#         return combined_df
+
+#     if target_where_clauses:
+#         target_where_clauses_together = " WHERE " + " AND ".join(target_where_clauses)
+#         target_query = base_query + target_where_clauses_together
+#         if experiment_where_clauses:
+#             exp_where_clauses_together = " AND " + experiment_where_clauses[0]
+#             target_query += exp_where_clauses_together
+#             target_parameters.extend(experiment_parameters)
+
+#         target_table = pd.read_sql(sql=target_query, params=target_parameters, con=mysql.connector.connect(**params))
+
+#         ds_target = downsample(format_reference_table(target_table), table_size=20000, seed=seed)
+#         ds_target["background"] = False
+#         print("Target only:")
+#         print(ds_target)
+
+#         return ds_target
+    
+def antibody_panel_reference_table(unique_target_family_idCLs: list  = None,
+                                   final_target_idBTOs: list = None,
+                                   modified_background_family_idCLs: list = None,
+                                   final_background_idBTOs: list = None, # this will always be []
+                                   experiment: list = None,
+                                   seed: int = 42):
+    
+    warnings.filterwarnings('ignore')
+    
+    precomputed_df = None
+    
+    # === CACHING STRATEGY ===
+    try:
+        all_btos = []
+        if final_target_idBTOs: all_btos.extend(final_target_idBTOs)
+        if final_background_idBTOs: all_btos.extend(final_background_idBTOs)
+        unique_btos_to_fetch = list(set(all_btos))
+
+        # Determine which keys to fetch from Redis
+        if unique_btos_to_fetch:
+            # Case 1: Specific tissues are provided. Fetch only those.
+            logging.info(f"Fetching specific tissues from cache: {unique_btos_to_fetch}")
+            redis_keys_to_fetch = [f"tissue_data:{bto}" for bto in unique_btos_to_fetch]
+        else:
+            # Case 2: NO tissues are provided. Fetch ALL cached tissues.
+            logging.info("No specific tissues provided. Fetching all available tissues from cache.")
+            # Use SCAN to avoid blocking Redis with a potentially large KEYS command
+            redis_keys_to_fetch = [key for key in redis_client.scan_iter("tissue_data:*")]
+        
+        if redis_keys_to_fetch:
+            cached_data_list = redis_client.mget(redis_keys_to_fetch)
+            
+            df_list = []
+            for i, cached_data in enumerate(cached_data_list):
+                if cached_data:
+                    buffer = io.BytesIO(cached_data)
+                    df = pd.read_parquet(buffer, engine='pyarrow')
+                    df_list.append(df)
+                else:
+                    # This can happen if a key from SCAN expires before MGET, which is fine.
+                    logging.warning(f"No data found for key: {redis_keys_to_fetch[i]}.")
+
+            if df_list:
+                logging.info(f"CACHE HIT. Loaded data for {len(df_list)} tissue(s).")
+                precomputed_df = pd.concat(df_list, ignore_index=True)
+                print("precomputed_df:\n", precomputed_df)
+
+    except redis.exceptions.RedisError as e:
+        logging.error(f"Redis connection failed: {e}. Falling back to database.")
+        precomputed_df = None
+
+    # --- PROCESS DATA: Either from cache (fast) or from DB (slow fallback) ---
+    
+    if precomputed_df is not None:
+        logging.info("Filtering data from cached pre-computed table.")
+        
+        if experiment:
+            logging.info(f"Applying experiment filter on cached data: {experiment}")
+            precomputed_df = precomputed_df[precomputed_df['idExperiment'].isin(experiment)]
+
+        # --- DYNAMIC FILTERING LOGIC (Now works for both specific and all-tissue cases) ---
+        target_mask = pd.Series(True, index=precomputed_df.index)
+        background_mask = pd.Series(True, index=precomputed_df.index)
+        
+        # Build target mask
+        if final_target_idBTOs:
+            target_mask &= precomputed_df['idBTO'].isin(final_target_idBTOs)
+        if unique_target_family_idCLs:
+            target_mask &= precomputed_df['idCL'].isin(unique_target_family_idCLs)
+            
+        # Build background mask
+        if final_background_idBTOs:
+            background_mask &= precomputed_df['idBTO'].isin(final_background_idBTOs)
+        if modified_background_family_idCLs:
+            background_mask &= precomputed_df['idCL'].isin(modified_background_family_idCLs)
+            
+        target_table = precomputed_df[target_mask]
+        background_table = precomputed_df[background_mask]
+
+        # --- COMMON PROCESSING PATH ---
+        # (This section remains unchanged)
+        if target_table.empty and background_table.empty:
+            logging.info("No data found for the specified criteria.")
+            return pd.DataFrame()
+    
         idCell_in_target_table = target_table['idCell'].unique()
-        # Filter background to keep only rows where "idCell" is not found in A
         filtered_background = background_table[~background_table['idCell'].isin(idCell_in_target_table)]
-
-        ds_background = downsample(format_reference_table(filtered_background), table_size=10000, seed=seed)
-        ds_background["background"] = True
-        print("Part 1: ds_background")
-        print(ds_background)
-
-        ds_target = downsample(format_reference_table(target_table), table_size=10000, seed=seed)
-        ds_target["background"] = False
-        print("Part 2: ds_target")
-        print(ds_target)
-
+    
+        ds_target = pd.DataFrame()
+        if not target_table.empty:
+            ds_target = downsample(format_reference_table(target_table), table_size=10000, seed=seed)
+            ds_target["background"] = False
+            print("CACHE method ds_target:\n", ds_target)
+    
+        ds_background = pd.DataFrame()
+        if not filtered_background.empty:
+            ds_background = downsample(format_reference_table(filtered_background), table_size=10000, seed=seed)
+            ds_background["background"] = True
+            print("CACHE method ds_background:\n", ds_background)
+    
+        if ds_target.empty and ds_background.empty:
+            return pd.DataFrame()
+            
         combined_df = pd.concat([ds_target, ds_background], axis=0, ignore_index=False)
         columns = [col for col in combined_df.columns if col not in ['idCL', 'idExperiment', 'background']]
         columns += ['idCL', 'idExperiment', 'background']
         combined_df = combined_df[columns]
-        print("Part 3: combined_df")
-        print(combined_df)
-
+        print("CACHE method combined_df:\n", combined_df)
+        
+        logging.info(f"Returning combined DataFrame with {len(combined_df)} rows.")
         return combined_df
+        
+    else:
+        # Fallback to direct DB query (this logic remains the same)
+        logging.warning("CACHE MISS or failure. Falling back to direct DB query.")
 
-    if target_where_clauses:
-        target_where_clauses_together = " WHERE " + " AND ".join(target_where_clauses)
-        target_query = base_query + target_where_clauses_together
-        if experiment_where_clauses:
-            exp_where_clauses_together = " AND " + experiment_where_clauses[0]
-            target_query += exp_where_clauses_together
-            target_parameters.extend(experiment_parameters)
-
-        target_table = pd.read_sql(sql=target_query, params=target_parameters, con=mysql.connector.connect(**params))
-
-        ds_target = downsample(format_reference_table(target_table), table_size=20000, seed=seed)
-        ds_target["background"] = False
-        print("Target only:")
-        print(ds_target)
-
-        return ds_target
+        combined_df = antibody_panel_reference_table_unified_query(unique_target_family_idCLs = unique_target_family_idCLs,
+                                   final_target_idBTOs = final_target_idBTOs,
+                                   modified_background_family_idCLs = modified_background_family_idCLs,
+                                   final_background_idBTOs = final_background_idBTOs, # this will always be []
+                                   experiment = experiment,
+                                   seed = seed)
+        return combined_df
 
 
 # ----------------------- Functions for decision_tree_reference_table --------------#
