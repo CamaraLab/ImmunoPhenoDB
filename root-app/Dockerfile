@@ -2,8 +2,11 @@
 # FROM nginx
 # COPY default.conf /etc/nginx/conf.d/default.conf
 
+### NOTE: Update 01-23-2026, the default.conf file bundled with the NGINX docker image is no longer used
+### Rather, an updated "default.conf" located on the EC2 instance home directory is used instead to enable HTTPS
+### This prevents the need to re-create and re-push a new image each time a modification is made to the conf file
 
-# New dockerfile 04-17-2025 -- bundling React with NGINX on EC2
+# New dockerfile 04-17-2025 -- bundling React with NGINX on EC2. Must be located in the ROOT directory of project to access the frontend files
 # NOTE: Use this dockerfile for creating a NGINX docker image, which will now contain the react front end => to be pushed onto Dockerhub
 
 # Step 1: Use Node compatible version with React
