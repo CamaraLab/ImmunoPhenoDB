@@ -1,27 +1,27 @@
 services:
     node:
-        restart: always
-        build:
-            context: ./node-api
-        ports:
-            - "8080:8080"
-        depends_on:
-            - redis
-    nginx:
-        restart: always
-        build:
-            context: ./nginx
-        ports:
-            - "80:80"
+       restart: always
+       image: camaralab/db_server:nodedbarm
+       ports:
+        - "8080:8080"
+       depends_on:
+        - redis
     flask:
-        restart: always
-        build:
-            context: ./flask-api
-        ports:
-            - "5000:5000"
+       restart: always
+       image: camaralab/db_server:flaskdbarm
+       ports:
+        - "5000:5000"
+       volumes:
+        - /home/ubuntu/mysql_files:/app/config
     redis:
-        restart: always
-        build:
-            context: ./redis
-        ports:
-            - "6379:6379"
+       restart: always
+       image: camaralab/db_server:redisdbarm
+       ports:
+        - "6379:6379"
+    nginx:
+       restart: always
+       image: camaralab/db_server:nginxdbarm
+       ports:
+        - "80:80"
+       depends_on:
+        - node
