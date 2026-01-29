@@ -1,0 +1,27 @@
+services:
+    node:
+        restart: always
+        build:
+            context: ./node-api
+        ports:
+            - "8080:8080"
+        depends_on:
+            - redis
+    nginx:
+        restart: always
+        build:
+            context: ./nginx
+        ports:
+            - "80:80"
+    flask:
+        restart: always
+        build:
+            context: ./flask-api
+        ports:
+            - "5000:5000"
+    redis:
+        restart: always
+        build:
+            context: ./redis
+        ports:
+            - "6379:6379"
