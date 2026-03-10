@@ -13,6 +13,8 @@ import {
 import { ExportToCsv } from 'export-to-csv';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 
+import ReactGA from "react-ga4";
+
 // Modulus function
 const mod = (n: number, m: number) => ((n % m) + m) % m;
 
@@ -85,6 +87,12 @@ const ModelResultsTable = ({radioValue,
 //   const currentAntibody = modelAbKeys[tableIndex]
 
   const handleExportDataCSV = () => {
+    // Send the event to Google Analytics
+    ReactGA.event({
+      category: "data_export",
+      action: "export_csv_results",
+    });
+
     // If modelAbKeys is empty, then we are dealing with a single 'Cell Types' array
     if (modelAbKeys.length === 0 ) {
         csvExporter.generateCsv(modelResults);
@@ -98,6 +106,11 @@ const ModelResultsTable = ({radioValue,
   }
 
   const handleExportDataTextFile = () => {
+    ReactGA.event({
+      category: "data_export",
+      action: "export_txt_results",
+    });
+
     // If modelAbKeys is empty, then we are dealing with a single 'Cell Types' array
     if (modelAbKeys.length === 0 ) {
       textFileExporter.generateCsv(modelResults);

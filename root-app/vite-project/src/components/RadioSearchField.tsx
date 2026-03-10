@@ -22,6 +22,8 @@ import {
     TextField,
 } from '@mui/material';
 
+import ReactGA from "react-ga4";
+
 
 /* 
 The RadioSearchField.tsx component consists of two parts: a radio button to indicate 
@@ -288,6 +290,12 @@ const RadioSearchField = ({radioValue,
     }
 
     const handleSearchButton = async (e: any) => {
+        // Send the event to Google Analytics
+        ReactGA.event({
+          category: "query",
+          action: "query_database",
+        });
+
         e.preventDefault()
 
         // Prevent action if pressing "Enter" despite button being disabled by adding extra check

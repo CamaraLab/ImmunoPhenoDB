@@ -16,6 +16,7 @@ import {
 import _ from 'underscore';
 import { default as axios } from "axios";
 import { Delete } from '@mui/icons-material';
+import ReactGA from "react-ga4";
 
 /* 
 The Cart.tsx component consists of one Material React Table, with three columns called:
@@ -216,6 +217,12 @@ const Cart = ({cartData,
   // 1. First one runs the LMM and gets the results back into a table
   // 2. Second one gets the plotting statistics needed for the boxplot
   const handleRunLMM = async (e: any) => {
+    // Send the event to Google Analytics
+    ReactGA.event({
+      category: "query",
+      action: "perform_linear_mixed_model",
+    });
+
     // Prevent reload on page when clicked
     e.preventDefault()
 
