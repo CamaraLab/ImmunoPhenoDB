@@ -6,6 +6,8 @@ import csv
 import urllib
 from datetime import datetime
 import warnings
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 import configparser
 import mysql.connector # mysql-connector-python
@@ -323,22 +325,43 @@ def _uniprot(sci_crunch_alias: str = None,
 
     return uniprotID, otherAliases
 
+# Configure retry logic for transient errors
+retry_strategy = Retry(
+    total=10,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET"]
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+session = requests.Session()
+session.mount("https://", adapter)
+
 def _sci_crunch_hits(ab_id: str) -> bool:
     """
     Retrieves information about an antibody using SciCrunch's API
 
-    Parameters:
+    Parameters:quer
         ab_id (str): antibody id from The Antibody Registry
     
     Returns:
         response (json): JSON result if successful response
         false (bool): False if error with response
     """
-    response = requests.get(SCI_CRUNCH_BASE + SCI_RRID_ENDPOINT + ab_id + SCI_FILE)
-    if response.status_code == 200:
+    # response = requests.get(SCI_CRUNCH_BASE + SCI_RRID_ENDPOINT + ab_id + SCI_FILE)
+    # if response.status_code == 200:
+    #     return response.json()
+    # else:
+    #     return False
+    url = f"{SCI_CRUNCH_BASE}{SCI_RRID_ENDPOINT}{ab_id}{SCI_FILE}"
+    try:
+        # Use session with retries and defined timeout
+        response = session.get(url, timeout=10) 
+        response.raise_for_status() 
         return response.json()
-    else:
-        return False
+    except requests.exceptions.RequestException as e:
+        # Log error appropriately
+        print(f"Request failed: {e}")
+    return False
 
 def _sci_uni(ab_id_pair: list, 
              user_uniprotID: str = None) -> list:
