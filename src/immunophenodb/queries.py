@@ -327,8 +327,8 @@ def _uniprot(sci_crunch_alias: str = None,
 
 # Configure retry logic for transient errors
 retry_strategy = Retry(
-    total=10,
-    backoff_factor=2, # Increased from 1 to 2
+    total=5,
+    backoff_factor=5,
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=["GET"],
     respect_retry_after_header=True # Ensures we listen to the server's wait instructions
