@@ -328,13 +328,27 @@ def _uniprot(sci_crunch_alias: str = None,
 # Configure retry logic for transient errors
 retry_strategy = Retry(
     total=10,
-    backoff_factor=1,
+    backoff_factor=2, # Increased from 1 to 2
     status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET"]
+    allowed_methods=["GET"],
+    respect_retry_after_header=True # Ensures we listen to the server's wait instructions
 )
+
 adapter = HTTPAdapter(max_retries=retry_strategy)
 session = requests.Session()
 session.mount("https://", adapter)
+
+def _sci_crunch_hits(ab_id: str) -> bool:
+    url = f"{SCI_CRUNCH_BASE}{SCI_RRID_ENDPOINT}{ab_id}{SCI_FILE}"
+    try:
+        response = session.get(url, timeout=10) 
+        response.raise_for_status() 
+        return response.json()
+    except requests.exceptions.RetryError as e:
+        print(f"Max retries exceeded for {ab_id}: {e}")
+    except requests.exceptions.RequestException as e:
+        print(f"Request failed: {e}")
+    return False
 
 def _sci_crunch_hits(ab_id: str) -> bool:
     """
