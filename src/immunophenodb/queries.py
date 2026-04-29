@@ -8,6 +8,7 @@ from datetime import datetime
 import warnings
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import time
 
 import configparser
 import mysql.connector # mysql-connector-python
@@ -350,7 +351,7 @@ def _sci_crunch_hits(ab_id: str) -> bool:
         print(f"Request failed: {e}")
     return False
 
-def _sci_crunch_hits(ab_id: str) -> bool:
+def _sci_crunch_hits(ab_id: str, delay: float = 0.5) -> bool:
     """
     Retrieves information about an antibody using SciCrunch's API
 
@@ -366,10 +367,14 @@ def _sci_crunch_hits(ab_id: str) -> bool:
     #     return response.json()
     # else:
     #     return False
+    # 1. Mandatory sleep to protect the loop from hitting the API too fast
+    if delay > 0:
+        time.sleep(delay)
+
     url = f"{SCI_CRUNCH_BASE}{SCI_RRID_ENDPOINT}{ab_id}{SCI_FILE}"
     try:
         # Use session with retries and defined timeout
-        response = session.get(url, timeout=10) 
+        response = session.get(url, timeout=15) 
         response.raise_for_status() 
         return response.json()
     except requests.exceptions.RequestException as e:
